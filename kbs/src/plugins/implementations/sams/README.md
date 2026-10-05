@@ -41,7 +41,7 @@ sequenceDiagram
     actor guest_owner as Guest Owner
     participant kataconfig as Kata Config File(s)
     participant spec as Pod Spec File
-    participant k8s as Kubernetes
+    participant k8s as Kubernetes<br>(on Untrusted Host)
     participant kata_runtime as Kata Runtime<br>(on Untrusted Host)
 
     opt Configure default Trustee API URL
@@ -273,7 +273,7 @@ encrypted with the TEE's public key). The CDH decrypts image layers and the pod 
 
 ```mermaid
 sequenceDiagram
-    participant k8s as Kubernetes
+    participant k8s as Kubernetes<br>(on Untrusted Host)
     participant kata_runtime as Kata Runtime<br>(on Untrusted Host)
     participant kata_agent as Kata Agent<br>(in CVM)
     participant cdh as Confidential Data Hub<br>(in CVM)
@@ -282,7 +282,7 @@ sequenceDiagram
     participant kbs as KBS
     participant policy_engine as Policy Engine<br>(Regorus)
     participant kbs_resource as KBS Resource Plugin
-    participant k8s as Kubernetes
+    participant k8s as Kubernetes<br>(on Untrusted Host)
 
     k8s ->> kata_runtime: Launch Pod <br>from encrypted image
     kata_runtime ->> kata_agent: Forward Request
