@@ -104,7 +104,7 @@ sequenceDiagram
     alt requirePreVerification is NOT true
         note left of kata_runtime: Fallback: launch CVM<br>without ID Block<br>(current flow)
     else requirePreVerification is true
-        kata_runtime ->> api: POST /generate
+        kata_runtime ->> api: POST /measurement
         api ->> sams: Forward request
 
         note over kata_runtime, sams: LaunchParams = {vcpus, ovmf_hash,<br>kernel_hash, initrd_hash, ...}
