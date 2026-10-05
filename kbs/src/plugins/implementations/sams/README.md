@@ -13,6 +13,8 @@ Why?
 API
 ---
 ### POST /measurement
+#### Requires Admin?
+- No
 #### Request Params:
 - A JSON Object containing:
 1. All params required to create an SNP Launch Measurement, EXCEPT for the Kernel, Initrd, & OVMF files
@@ -342,4 +344,33 @@ sequenceDiagram
     kata_agent ->> kata_agent: Create Pod
     kata_agent -->> kata_runtime: Pod created
     kata_runtime -->> k8s: Pod created
+```
+
+### POST /launch-policy
+#### Requires Admin?
+- Yes
+#### Request Params:
+- A JSON Object containing:
+ {"policy": "< base64-encoded rego policy >"}
+
+#### Request Response Body:
+- OK
+
+
+#### Expected usage:
+
+```shell
+encoded_policy=$(base64 <<EOF
+package policy
+import rego.v1
+default acceptable := true
+EOF)
+payload="$(jq --args policy "$encoded_policy" '{"policy": $policy}')"
+
+kbs_host=localhost
+kbs_api_port=8080
+curl -X POST \
+    -H "Content-Type: application/json" \
+    -d "$payload" \
+    http://$kbs_host:$kbs_api_port/kbs/v0/sams/launch-policy 
 ```
