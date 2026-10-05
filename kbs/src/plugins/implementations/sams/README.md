@@ -306,6 +306,9 @@ sequenceDiagram
 
                 alt Policy denies access
                     policy_engine ->> kbs: ACCESS DENIED
+                    break when access denied
+                    note over kbs,cdh: Pod not started,<br> CVM SHUTDOWN
+                    end
                 else Policy allows access
                     policy_engine -->> kbs: Allow
                     kbs ->> kbs_resource: Retrieve resource
