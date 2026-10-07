@@ -204,14 +204,14 @@ sequenceDiagram
         trustee_as -->> cdh: Session Cookie +<br>Challenge (nonce + optional extra params)
 
         cdh ->> fw: Request Attestation Report
-        note over cdh, fw: GUEST_DATA <br>= hash(nonce + TEE PubKey)
+        note over cdh, fw: REPORT_DATA <br>= hash(nonce + TEE PubKey)
         fw -->> cdh: Attestation Report
-        note over fw, cdh: Report contains:<br>- GUEST_DATA (nonce + TEE PubKey hash)<br>- IDBlock & IDAuth fields
+        note over fw, cdh: Report contains:<br>- REPORT_DATA (nonce + TEE PubKey hash)<br>- IDBlock & IDAuth fields
 
         cdh ->> api: POST /kbs/v0/attest
         api -->> trustee_as: Forward attestation request
         note over cdh, api: Header: Cookie kbs-session-id=...<br>Body: {tee-evidence, runtime-data,<br>init-data (optional)}
-        note over cdh, api: runtime-data (REQUIRED):<br>RCAR nonce + TEE PubKey<br>(Hash MUST match GUEST_DATA)
+        note over cdh, api: runtime-data (REQUIRED):<br>RCAR nonce + TEE PubKey<br>(Hash MUST match REPORT_DATA)
         note over cdh, api: tee-evidence (REQUIRED):<br>Attestation Report <br>as primary_evidence
     end
 ```
@@ -241,7 +241,7 @@ sequenceDiagram
 
     critical Verify user-defined report fields
         snp_verifier ->> snp_verifier: Hash provided initdata & guestdata
-        snp_verifier ->> snp_verifier: Compare against HOST_DATA<br>& GUEST_DATA in report
+        snp_verifier ->> snp_verifier: Compare against HOST_DATA<br>& REPORT_DATA in report
 
         break initdata hash mismatch
             note over snp_verifier: CVM may be in a<br>non-compliant state
