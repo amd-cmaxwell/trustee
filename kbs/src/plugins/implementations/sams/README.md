@@ -89,7 +89,9 @@ sequenceDiagram
 When `requirePreVerification` is true, Kata Runtime requests an ID Block from
 the SAMS plugin. SAMS optionally pre-verifies each launch parameter against RVPS
 reference values before computing the expected launch measurement and signing the
-ID Block.
+ID Block. SAMS retrieves the current Minimum Acceptable Guest SVN (MAGS) from
+RVPS and embeds it in the ID Block as the GUEST_SVN, versioning the block so
+that stale ID Blocks can be rejected during attestation.
 
 If `requirePreVerification` is not true, the current (non-SAMS) flow is used and
 the CVM is launched without an ID Block.
@@ -246,10 +248,11 @@ The SNP Verifier validates the attestation report in three stages: first, it ver
 AMD certificate chain (hardware endorsement); second, it checks that the hashes of the
 provided initdata and runtimedata match the HOST_DATA and REPORT_DATA fields in the report.
 The verified claims are then evaluated by the Policy Engine against the EAR appraisal policy.
-Policy provisions can query RVPS for reference values and verify the Trustee endorsement
-by comparing the IDKeyDigest against acceptable SAMS public key hashes from RVPS. Any
-mismatch adjusts the trust claims at a severity determined by the Verifier Policy Owner.
-The final result is an EAR token encoding the TEE's trustworthiness vector.
+Policy provisions can query RVPS for reference values, verify the reported GUEST_SVN against
+the Minimum Acceptable Guest SVN (MAGS) from RVPS, and verify the Trustee endorsement by
+comparing the IDKeyDigest against acceptable SAMS public key hashes from RVPS. Any mismatch
+adjusts the trust claims at a severity determined by the Verifier Policy Owner. The final
+result is an EAR token encoding the TEE's trustworthiness vector.
 
 > **TODO:** `ear_default_policy_cpu.rego` needs to be updated to set the trustworthiness
 > vector status to "warning" or "contraindicated" when guest svn verification
