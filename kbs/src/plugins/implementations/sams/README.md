@@ -222,8 +222,11 @@ sequenceDiagram
 
 The SNP Verifier validates the attestation report: checking the AMD certificate chain,
 verifying user-defined fields (initdata/runtimedata hashes), then evaluating the claims
-against the appraisal policy via the policy engine and RVPS. The result is an EAR token
-encoding the TEE's trustworthiness vector.
+against the appraisal policy via the policy engine and RVPS. As part of the appraisal
+policy evaluation, the policy engine can optionally verify the Trustee endorsement by
+comparing the IDKeyDigest in the attestation report against a list of acceptable SAMS
+public key hashes retrieved from RVPS. The result is an EAR token encoding the TEE's
+trustworthiness vector.
 
 ```mermaid
 sequenceDiagram
@@ -260,11 +263,24 @@ sequenceDiagram
         snp_verifier ->> policy_engine: Evaluate EAR policy for TEE class
         note over snp_verifier, policy_engine: input = claims from report,<br>initdata, & runtime-data<br>rules = [data.policy.trust_claims,<br>data.policy.extensions]
 
-        loop For each policy rule
-            opt Rule queries reference values
+        loop For each policy provision
+            opt Provision queries reference values
                 policy_engine ->> rvps: Retrieve reference values
                 rvps -->> policy_engine: Reference values
                 policy_engine ->> policy_engine: Compare claims against values
+            end
+        end
+        opt Verify Trustee endorsement
+            alt The EAR Policy contains provision(s)<br> to verify the ID Key Signature
+                policy_engine ->> rvps: Retrieve SHA-384 hashs of acceptable SAMS Public Keys from RVPS
+                rvps -->> policy_engine: Acceptable SAMS Public Key Hashes
+                note over policy_engine: Compare the IDKeyDigest<br> in the Attestation Report <br>against the list of<br> acceptable<br> Public Keys Hashes
+                policy_engine ->> policy_engine: Verify IDKeyDigest Match
+                break when No IDKeyDigest match found
+                    policy_engine ->> policy_engine: Adjust Trust claims accordingly<br>
+                    note over policy_engine: The exact severity<br> of this mismatch is left<br> to the Verifier Policy Owner.
+                    note right of policy_engine: (However, the default appraisal policy,<br> ear_default_policy_cpu.rego,<br> needs to be updated to set the <br>trustworthiness vector status<br> to "warning" or "contraindicated")
+                end
             end
         end
 
