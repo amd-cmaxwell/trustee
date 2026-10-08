@@ -221,7 +221,7 @@ sequenceDiagram
 ##### 5. Attestation Verification & Policy Evaluation
 
 The SNP Verifier validates the attestation report: checking the AMD certificate chain,
-verifying user-defined fields (initdata/guestdata hashes), then evaluating the claims
+verifying user-defined fields (initdata/runtimedata hashes), then evaluating the claims
 against the appraisal policy via the policy engine and RVPS. The result is an EAR token
 encoding the TEE's trustworthiness vector.
 
@@ -240,13 +240,13 @@ sequenceDiagram
     end
 
     critical Verify user-defined report fields
-        snp_verifier ->> snp_verifier: Hash provided initdata & guestdata
+        snp_verifier ->> snp_verifier: Hash provided initdata & runtimedata
         snp_verifier ->> snp_verifier: Compare against HOST_DATA<br>& REPORT_DATA in report
 
         break initdata hash mismatch
             note over snp_verifier: CVM may be in a<br>non-compliant state
         end
-        break guestdata hash mismatch
+        break runtimedata hash mismatch
             alt Nonce mismatch
                 note over snp_verifier: Potential replay attack
             else TEE PubKey mismatch
