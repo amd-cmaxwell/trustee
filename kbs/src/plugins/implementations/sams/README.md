@@ -146,13 +146,21 @@ sequenceDiagram
     participant kata_runtime as Kata Runtime<br>(on Untrusted Host)
 
     kata_runtime ->> kata_runtime: Add Author Key metadata
-    note over kata_runtime: AuthKey = sign(Guest Owner PrivKey, IDKey)
+    note over kata_runtime: AuthKey = <br>sign(Guest Owner PrivKey, IDKey)
+
+    kata_runtime ->> kata_runtime: Collect CVM Launch Params
+    critical Inject CVM Launch Params into InitData
+    note over kata_runtime: This means <br>1. The CVM Launch Params<br>will be mounted Read-Only<br> inside the CVM
+    note right of kata_runtime: And Also,<br>2. The<br> CVM Launch Params<br> will be hashed<br> into the HOST_DATA field<br> of Attestation Reports
+    end
 
     kata_runtime ->> kata_runtime: Encode hypervisor params
-    note over kata_runtime: id-block = base64(IDBlock)<br>id-auth = base64({ID_KEY_ALGO,<br>AUTH_KEY_ALGO, ID_BLOCK_SIG,<br>ID_KEY, ID_KEY_SIG, AUTHOR_KEY})
+    note over kata_runtime: id-block = base64(IDBlock)<br>id-auth = base64({<br>ID_KEY_ALGO,<br>AUTH_KEY_ALGO, <br>ID_BLOCK_SIG,<br>ID_KEY_DIGEST<br>, ID_KEY_SIG,<br> AUTHOR_KEY})<br>host-data=base64(initData)
+
+    
 
     kata_runtime ->> hv: Launch CVM with ID Block
-    note over kata_runtime, hv: -object sev-snp-guest,<br>id-block=...,<br>author-key-enabled=1,<br>id-auth=...
+    note over kata_runtime, hv: -object sev-snp-guest,<br>id-block=...,<br>author-key-enabled=1,<br>id-auth=...,<br>host-data=...
     hv ->> fw: SNP_LAUNCH
 
     critical SNP_LAUNCH_FINALIZE
@@ -162,7 +170,7 @@ sequenceDiagram
 
         alt Verification succeeds
             fw ->> hv: ALLOW CVM creation (with guest context)
-            note over fw, hv: CVM boots with ID Block<br>& ID Auth in guest context
+            note over fw, hv: CVM boots with guest context containing<br> ID Block,<br> ID Auth,<br>& Host Data <br> + With InitData file mounted RO
             hv -->> kata_runtime: CVM booted
         else Verification fails
             break AuthKeyDigest mismatch
@@ -184,9 +192,14 @@ sequenceDiagram
 ##### 4. RCAR Handshake & Attestation Report
 
 Once the CVM is running, the Confidential Data Hub (CDH) needs secrets (e.g. image
-decryption keys) from the KBS. It first performs the RCAR handshake: obtaining a
-challenge nonce, requesting an attestation report from SNP firmware bound to that
-nonce, and submitting the report for verification.
+decryption keys) from the KBS. It performs the RCAR handshake in three steps: first,
+it authenticates via `POST /kbs/v0/auth` and receives a session cookie and challenge
+nonce. Next, it requests an attestation report from SNP firmware, binding the nonce
+and TEE public key into REPORT_DATA and the initdata hash into HOST_DATA. The
+resulting report also carries IDBlock and IDAuth fields. Finally, CDH submits the
+report to `POST /kbs/v0/attest` with the tee-evidence (the attestation report),
+runtime-data (the nonce and TEE public key whose hash must match REPORT_DATA),
+and optionally init-data.
 
 ```mermaid
 sequenceDiagram
@@ -204,15 +217,16 @@ sequenceDiagram
         trustee_as -->> cdh: Session Cookie +<br>Challenge (nonce + optional extra params)
 
         cdh ->> fw: Request Attestation Report
-        note over cdh, fw: REPORT_DATA <br>= hash(nonce + TEE PubKey)
+        note over cdh, fw: REPORT_DATA <br>= hash(nonce + TEE PubKey)<br><br>HOST_DATA<br>= hash(InitData)
         fw -->> cdh: Attestation Report
-        note over fw, cdh: Report contains:<br>- REPORT_DATA (nonce + TEE PubKey hash)<br>- IDBlock & IDAuth fields
+        note over fw, cdh: Report contains:<br><br>- REPORT_DATA = <br>(hash of nonce & TEE PubKey hash)<br><br>- HOST_DATA =<br>(hash of initData)<br><br>- IDBlock & IDAuth fields
 
         cdh ->> api: POST /kbs/v0/attest
         api -->> trustee_as: Forward attestation request
         note over cdh, api: Header: Cookie kbs-session-id=...<br>Body: {tee-evidence, runtime-data,<br>init-data (optional)}
         note over cdh, api: runtime-data (REQUIRED):<br>RCAR nonce + TEE PubKey<br>(Hash MUST match REPORT_DATA)
         note over cdh, api: tee-evidence (REQUIRED):<br>Attestation Report <br>as primary_evidence
+        note over cdh, api: init-data (HIGHLY RECOMENDED):<br> Trustee Config files<br> + CVM Launch Params
     end
 ```
 
@@ -220,13 +234,20 @@ sequenceDiagram
 
 ##### 5. Attestation Verification & Policy Evaluation
 
-The SNP Verifier validates the attestation report: checking the AMD certificate chain,
-verifying user-defined fields (initdata/runtimedata hashes), then evaluating the claims
-against the appraisal policy via the policy engine and RVPS. As part of the appraisal
-policy evaluation, the policy engine can optionally verify the Trustee endorsement by
-comparing the IDKeyDigest in the attestation report against a list of acceptable SAMS
-public key hashes retrieved from RVPS. The result is an EAR token encoding the TEE's
-trustworthiness vector.
+The SNP Verifier validates the attestation report in three stages: first, it verifies the
+AMD certificate chain (hardware endorsement); second, it checks that the hashes of the
+provided initdata and runtimedata match the HOST_DATA and REPORT_DATA fields in the report.
+The verified claims are then evaluated by the Policy Engine against the EAR appraisal policy.
+Policy provisions can query RVPS for reference values, optionally re-verify initdata launch
+parameters, and verify the Trustee endorsement by comparing the IDKeyDigest against
+acceptable SAMS public key hashes from RVPS. Any mismatch adjusts the trust claims at
+a severity determined by the Verifier Policy Owner. The final result is an EAR token
+encoding the TEE's trustworthiness vector.
+> **TODO** Need to update `attestation_service::parse_init_data()` in the `trustee` crate to parse CVM Launch Params from the InitData
+
+> **TODO:** `ear_default_policy_cpu.rego` needs to be updated to set the trustworthiness
+> vector status to "warning" or "contraindicated" when launch parameter re-verification
+> or Trustee endorsement verification fails.
 
 ```mermaid
 sequenceDiagram
@@ -236,16 +257,15 @@ sequenceDiagram
     participant rvps as RVPS
 
     critical Verify hardware endorsements
-        snp_verifier ->> snp_verifier: Verify report signed by<br>AMD certificate chain
+        snp_verifier ->> snp_verifier: Verify AMD certificate chain
         break Signature mismatch
-            note over snp_verifier: Report not trusted by HW manufacturer
+            note over snp_verifier: Report not trusted<br>by HW manufacturer
         end
     end
 
     critical Verify user-defined report fields
         snp_verifier ->> snp_verifier: Hash provided initdata & runtimedata
         snp_verifier ->> snp_verifier: Compare against HOST_DATA<br>& REPORT_DATA in report
-
         break initdata hash mismatch
             note over snp_verifier: CVM may be in a<br>non-compliant state
         end
@@ -261,7 +281,7 @@ sequenceDiagram
     critical Evaluate appraisal policy
         snp_verifier ->> policy_engine: Register query_reference_value extension
         snp_verifier ->> policy_engine: Evaluate EAR policy for TEE class
-        note over snp_verifier, policy_engine: input = claims from report,<br>initdata, & runtime-data<br>rules = [data.policy.trust_claims,<br>data.policy.extensions]
+        note over snp_verifier, policy_engine: input = claims from report,<br>initdata, & runtimedata<br>rules = [data.policy.trust_claims,<br>data.policy.extensions]
 
         loop For each policy provision
             opt Provision queries reference values
@@ -270,17 +290,26 @@ sequenceDiagram
                 policy_engine ->> policy_engine: Compare claims against values
             end
         end
-        opt Verify Trustee endorsement
-            alt The EAR Policy contains provision(s)<br> to verify the ID Key Signature
-                policy_engine ->> rvps: Retrieve SHA-384 hashs of acceptable SAMS Public Keys from RVPS
-                rvps -->> policy_engine: Acceptable SAMS Public Key Hashes
-                note over policy_engine: Compare the IDKeyDigest<br> in the Attestation Report <br>against the list of<br> acceptable<br> Public Keys Hashes
-                policy_engine ->> policy_engine: Verify IDKeyDigest Match
-                break when No IDKeyDigest match found
-                    policy_engine ->> policy_engine: Adjust Trust claims accordingly<br>
-                    note over policy_engine: The exact severity<br> of this mismatch is left<br> to the Verifier Policy Owner.
-                    note right of policy_engine: (However, the default appraisal policy,<br> ear_default_policy_cpu.rego,<br> needs to be updated to set the <br>trustworthiness vector status<br> to "warning" or "contraindicated")
-                end
+
+        opt Verify initdata launch parameters
+            loop For each launch parameter
+                policy_engine ->> rvps: Retrieve reference values
+                rvps -->> policy_engine: Reference values
+                policy_engine ->> policy_engine: Compare claims against values
+            end
+            break Launch parameters non-compliant
+                policy_engine ->> policy_engine: Adjust trust claims
+                note over policy_engine: Severity determined by<br>Verifier Policy Owner
+            end
+        end
+
+        opt Verify Trustee endorsement (IDKeyDigest)
+            policy_engine ->> rvps: Retrieve acceptable<br>SAMS public key hashes (SHA-384)
+            rvps -->> policy_engine: Acceptable public key hashes
+            policy_engine ->> policy_engine: Compare IDKeyDigest<br>against acceptable hashes
+            break No IDKeyDigest match
+                policy_engine ->> policy_engine: Adjust trust claims
+                note over policy_engine: Severity determined by<br>Verifier Policy Owner
             end
         end
 
@@ -337,7 +366,7 @@ sequenceDiagram
                 note over kbs, policy_engine: data = {plugin, resource-path, query}<br>input = claims from EAR Token<br>rule = data.policy.allow
 
                 alt Policy denies access
-                    policy_engine ->> kbs: ACCESS DENIED
+                    policy_engine -->> kbs: ACCESS DENIED
                     break when access denied
                     note over kbs,cdh: Pod not started,<br> CVM SHUTDOWN
                     end
