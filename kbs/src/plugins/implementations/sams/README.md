@@ -227,7 +227,7 @@ sequenceDiagram
         trustee_as -->> cdh: Session Cookie +<br>Challenge (nonce + optional extra params)
 
         cdh ->> fw: Request Attestation Report
-        note over cdh, fw: REPORT_DATA <br>= hash(nonce + TEE PubKey)<br><br>HOST_DATA<br>= hash(InitData)
+        note over cdh, fw: REPORT_DATA <br>= hash(nonce + TEE PubKey)
         fw -->> cdh: Attestation Report
         note over fw, cdh: Report contains:<br><br>- REPORT_DATA = <br>(hash of nonce & TEE PubKey hash)<br><br>- HOST_DATA =<br>(hash of initData)<br><br>- IDBlock & IDAuth fields
 
