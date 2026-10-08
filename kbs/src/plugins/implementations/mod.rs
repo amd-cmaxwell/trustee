@@ -10,6 +10,9 @@ pub mod provisioner;
 pub mod resource;
 pub mod sample;
 
+#[cfg(feature = "sams")]
+pub mod sams;
+
 #[cfg(feature = "external-plugin")]
 pub mod external_plugin;
 
@@ -20,6 +23,8 @@ pub use pkcs11::{Pkcs11Backend, Pkcs11Config};
 pub use provisioner::{Provisioner, ProvisionerConfig};
 pub use resource::{RepositoryConfig, ResourceStorage};
 pub use sample::{Sample, SampleConfig};
+#[cfg(feature = "sams")]
+pub use sams::{Sams, SamsConfig};
 
 #[cfg(feature = "external-plugin")]
 pub use external_plugin::{BackendConfig, ExternalPlugin, ExternalPluginConfig};
