@@ -149,6 +149,8 @@ ID Auth structures, and passes them to the hypervisor. SNP firmware verifies
 the signatures and compares the actual launch measurement against the expected
 value in the ID Block.
 
+> **TODO** Need to update `kata-runtime` to capture CVM Launch Params in a predictable, repeatable way and then include them in the InitData toml file it passes to the hypervisor / mounts into the CVM 
+
 ```mermaid
 sequenceDiagram
     participant fw as SNP Firmware
@@ -166,8 +168,6 @@ sequenceDiagram
 
     kata_runtime ->> kata_runtime: Encode hypervisor params
     note over kata_runtime: id-block = base64(IDBlock)<br>id-auth = base64({<br>ID_KEY_ALGO,<br>AUTH_KEY_ALGO, <br>ID_BLOCK_SIG,<br>ID_KEY_DIGEST<br>, ID_KEY_SIG,<br> AUTHOR_KEY})<br>host-data=base64(initData)
-
-    
 
     kata_runtime ->> hv: Launch CVM with ID Block
     note over kata_runtime, hv: -object sev-snp-guest,<br>id-block=...,<br>author-key-enabled=1,<br>id-auth=...,<br>host-data=...
