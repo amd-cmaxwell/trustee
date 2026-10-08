@@ -93,6 +93,15 @@ ID Block.
 If `requirePreVerification` is not true, the current (non-SAMS) flow is used and
 the CVM is launched without an ID Block.
 
+> **TODO** Need to update `sev` crate to support creating `IdAuth` (IDBlock Signing Metadata) from provided `IDBlockSig`'s.
+>> This facilitates allowing Kata-Runtime to Sign the IDKey provided by SAMS and set the Signature & AuthKey into the `IDAuth`
+
+> **TODO** Need to update `sev` crate to verify `IDBlockSig` when provided an IDBlock & an IDKey (PubKey)
+>> This facilitates allowing Kata-Runtime to confirm that the IDBlock, IDBlockSign, & IDKey SAMS returns actually match
+
+> **TODO** Need to update `sev` crate to be able to compute Launch Measurements when provided with KernelHashes, Initrd Hashes, & OVMF Hashes in addition to files.
+>> This facilitates Kata-Runtime sending SAMS hashes instead of large files.
+
 ```mermaid
 sequenceDiagram
     participant kata_runtime as Kata Runtime<br>(on Untrusted Host)
