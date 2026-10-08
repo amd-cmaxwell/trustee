@@ -97,7 +97,8 @@ the CVM is launched without an ID Block.
 >> This facilitates allowing Kata-Runtime to Sign the IDKey provided by SAMS and set the Signature & AuthKey into the `IDAuth`
 
 > **TODO** Need to update `sev` crate to verify `IDBlockSig` when provided an IDBlock & an IDKey (PubKey)
->> This facilitates allowing Kata-Runtime to confirm that the IDBlock, IDBlockSign, & IDKey SAMS returns actually match
+>> This facilitates allowing Kata-Runtime to confirm that the IDBlock, IDBlockSign, & IDKey SAMS returns actually match. 
+>> Note: This check already happens in the SNP Firmware, but for completeness sake this functionality should also be exposed in the `sev` crate.
 
 > **TODO** Need to update `sev` crate to be able to compute Launch Measurements when provided with KernelHashes, Initrd Hashes, & OVMF Hashes in addition to files.
 >> This facilitates Kata-Runtime sending SAMS hashes instead of large files.
