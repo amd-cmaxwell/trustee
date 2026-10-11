@@ -70,6 +70,7 @@ impl Sams {
         tee: Tee,
         is_auth: bool,
         body: &[u8],
+        headers: &HeaderMap,
     ) -> Result<Vec<u8>> {
         let mut handler = api::get_request_handler(
             endpoint,
@@ -80,7 +81,7 @@ impl Sams {
             self.policy_engine.clone(),
             self.storage.clone(),
         )?;
-        handler.handle(body).await
+        handler.handle(body, headers).await
     }
 }
 
@@ -94,21 +95,24 @@ impl ClientPlugin for Sams {
         method: &Method,
         _init_data: Option<&serde_json::Value>,
     ) -> Result<Vec<u8>> {
+        let empty_headers = HeaderMap::new();
         match (method.as_str(), path) {
             ("POST", ["measurement", tee_str]) => {
                 let tee = tee_from_path(tee_str)?;
-                self.dispatch("measurement", tee, false, body).await
+                self.dispatch("measurement", tee, false, body, &empty_headers)
+                    .await
             }
             ("POST", ["measurement", tee_str, "auth"]) => {
                 let tee = tee_from_path(tee_str)?;
-                self.dispatch("measurement", tee, true, body).await
+                self.dispatch("measurement", tee, true, body, &empty_headers)
+                    .await
             }
             ("POST", ["launch-policy", ..]) => {
                 let mut handler = api::get_launch_policy_handler(
                     self.policy_engine.clone(),
                     self.storage.clone(),
                 );
-                handler.handle(body).await
+                handler.handle(body, &empty_headers).await
             }
             _ => bail!("unsupported: {} /kbs/v0/sams/{}", method, path.join("/")),
         }
@@ -124,6 +128,15 @@ impl ClientPlugin for Sams {
         init_data: Option<&serde_json::Value>,
     ) -> Result<Vec<u8>> {
         match (method.as_str(), path) {
+            ("POST", ["measurement", tee_str]) => {
+                let tee = tee_from_path(tee_str)?;
+                self.dispatch("measurement", tee, false, body, headers)
+                    .await
+            }
+            ("POST", ["measurement", tee_str, "auth"]) => {
+                let tee = tee_from_path(tee_str)?;
+                self.dispatch("measurement", tee, true, body, headers).await
+            }
             ("POST", ["guest-owner"]) => {
                 let handler = GuestOwnerHandler::new(self.storage.clone());
                 handler.register(headers, body).await
@@ -140,13 +153,10 @@ impl ClientPlugin for Sams {
         &self,
         _body: &[u8],
         _query: &HashMap<String, String>,
-        path: &[&str],
+        _path: &[&str],
         _method: &Method,
     ) -> Result<bool> {
-        match path {
-            ["measurement", ..] => Ok(false),
-            _ => Ok(true),
-        }
+        Ok(true)
     }
 
     async fn auth_mode(
@@ -157,8 +167,7 @@ impl ClientPlugin for Sams {
         _method: &Method,
     ) -> Result<AuthMode> {
         match path {
-            ["guest-owner"] => Ok(AuthMode::Plugin),
-            ["measurement", ..] => Ok(AuthMode::Attestation),
+            ["measurement", ..] | ["guest-owner"] => Ok(AuthMode::Plugin),
             _ => Ok(AuthMode::Admin),
         }
     }

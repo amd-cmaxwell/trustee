@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use actix_web::http::header::HeaderMap;
 use anyhow::{anyhow, Result};
 use kbs_types::Tee;
 use key_value_storage::KeyValueStorage;
@@ -14,7 +15,7 @@ use super::backend::snp::measurement::MeasurementHandler as SnpMeasurementHandle
 
 #[async_trait::async_trait]
 pub trait RequestHandler: Send {
-    async fn handle(&mut self, body: &[u8]) -> Result<Vec<u8>>;
+    async fn handle(&mut self, body: &[u8], headers: &HeaderMap) -> Result<Vec<u8>>;
 }
 
 pub enum MeasurementHandler {
@@ -23,9 +24,9 @@ pub enum MeasurementHandler {
 
 #[async_trait::async_trait]
 impl RequestHandler for MeasurementHandler {
-    async fn handle(&mut self, body: &[u8]) -> Result<Vec<u8>> {
+    async fn handle(&mut self, body: &[u8], headers: &HeaderMap) -> Result<Vec<u8>> {
         match self {
-            Self::Snp(h) => h.handle(body).await,
+            Self::Snp(h) => h.handle(body, headers).await,
         }
     }
 }
