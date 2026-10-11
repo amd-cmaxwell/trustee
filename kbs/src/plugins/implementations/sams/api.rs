@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use anyhow::{anyhow, Result};
 use kbs_types::Tee;
 
@@ -20,9 +22,15 @@ impl RequestHandler for MeasurementHandler {
     }
 }
 
-pub fn get_request_handler(req_type: &str, tee: Tee) -> Result<MeasurementHandler> {
+pub fn get_request_handler(
+    req_type: &str,
+    tee: Tee,
+    ovmf_file: &Path,
+) -> Result<MeasurementHandler> {
     match (req_type, tee) {
-        ("measurement", Tee::Snp) => Ok(MeasurementHandler::Snp(SnpMeasurementHandler)),
+        ("measurement", Tee::Snp) => Ok(MeasurementHandler::Snp(SnpMeasurementHandler::new(
+            ovmf_file.to_path_buf(),
+        ))),
         ("measurement", other) => Err(anyhow!("unsupported TEE type for measurement: {other:?}")),
         _ => Err(anyhow!("unsupported request type: {req_type}")),
     }
