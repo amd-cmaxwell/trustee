@@ -11,6 +11,39 @@ use key_value_storage::StorageProvider;
 use serde::Deserialize;
 use serde_json::Value;
 
+#[derive(Debug, thiserror::Error)]
+#[error("{message}")]
+pub struct PluginHttpError {
+    pub status: u16,
+    pub message: String,
+}
+
+impl PluginHttpError {
+    pub fn bad_request(message: impl Into<String>) -> anyhow::Error {
+        Self {
+            status: 400,
+            message: message.into(),
+        }
+        .into()
+    }
+
+    pub fn unauthorized(message: impl Into<String>) -> anyhow::Error {
+        Self {
+            status: 401,
+            message: message.into(),
+        }
+        .into()
+    }
+
+    pub fn forbidden(message: impl Into<String>) -> anyhow::Error {
+        Self {
+            status: 403,
+            message: message.into(),
+        }
+        .into()
+    }
+}
+
 pub enum AuthMode {
     Admin,
     Attestation,

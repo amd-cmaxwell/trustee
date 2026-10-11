@@ -3,7 +3,9 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use actix_web::http::header::HeaderMap;
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, Result};
+
+use crate::plugins::plugin_manager::PluginHttpError;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use key_value_storage::KeyValueStorage;
 use openssl::ec::EcKey;
@@ -130,7 +132,9 @@ impl RequestHandler for MeasurementHandler {
         if self.is_auth
             && (req.family_id.is_none() || req.image_id.is_none() || req.guest_policy.is_none())
         {
-            bail!("auth endpoint requires family_id, image_id, and guest_policy");
+            return Err(PluginHttpError::bad_request(
+                "auth endpoint requires family_id, image_id, and guest_policy",
+            ));
         }
 
         let guest_owner_cert = if self.is_auth {
@@ -161,7 +165,9 @@ impl RequestHandler for MeasurementHandler {
                     .unwrap_or(false);
 
                 if !authorized {
-                    bail!("launch params rejected by SAMS policy");
+                    return Err(PluginHttpError::forbidden(
+                        "launch params rejected by SAMS policy",
+                    ));
                 }
             }
         }
@@ -231,27 +237,25 @@ impl RequestHandler for MeasurementHandler {
 
                 if let Some(cert) = &guest_owner_cert {
                     let cert_hash = hash_key(cert);
-                    if let Some(keypair_bytes) = self.storage.get(&cert_hash).await? {
-                        let keypair: StoredKeypair = serde_json::from_slice(&keypair_bytes)?;
-                        let guest_owner_priv_key =
-                            EcKey::private_key_from_pem(keypair.privkey.as_bytes())
-                                .map_err(|e| anyhow!("invalid guest-owner private key: {e}"))?;
+                    let keypair_bytes = self.storage.get(&cert_hash).await?.ok_or_else(|| {
+                        PluginHttpError::unauthorized("guest-owner certificate is unknown to SAMS")
+                    })?;
 
-                        id_auth = id_auth
-                            .sign_id_key(DEFAULT_KEY_ALGO, guest_owner_priv_key.clone())
-                            .map_err(|e| {
-                                anyhow!("failed to sign IDKey with guest-owner key: {e}")
-                            })?;
+                    let keypair: StoredKeypair = serde_json::from_slice(&keypair_bytes)?;
+                    let guest_owner_priv_key =
+                        EcKey::private_key_from_pem(keypair.privkey.as_bytes())
+                            .map_err(|e| anyhow!("invalid guest-owner private key: {e}"))?;
 
-                        let guest_owner_pub_key =
-                            SevEcdsaPubKey::try_from(&guest_owner_priv_key).map_err(|e| {
-                                anyhow!("failed to extract guest-owner public key: {e}")
-                            })?;
-                        let guest_owner_pub_key_bytes = guest_owner_pub_key.to_bytes().map_err(|e| {
-                            anyhow!("failed to serialize guest-owner public key: {e}")
-                        })?;
-                        author_key_b64 = Some(STANDARD.encode(guest_owner_pub_key_bytes.as_ref()));
-                    }
+                    id_auth = id_auth
+                        .sign_id_key(DEFAULT_KEY_ALGO, guest_owner_priv_key.clone())
+                        .map_err(|e| anyhow!("failed to sign IDKey with guest-owner key: {e}"))?;
+
+                    let guest_owner_pub_key = SevEcdsaPubKey::try_from(&guest_owner_priv_key)
+                        .map_err(|e| anyhow!("failed to extract guest-owner public key: {e}"))?;
+                    let guest_owner_pub_key_bytes = guest_owner_pub_key
+                        .to_bytes()
+                        .map_err(|e| anyhow!("failed to serialize guest-owner public key: {e}"))?;
+                    author_key_b64 = Some(STANDARD.encode(guest_owner_pub_key_bytes.as_ref()));
                 }
 
                 let auth_bytes = id_auth
