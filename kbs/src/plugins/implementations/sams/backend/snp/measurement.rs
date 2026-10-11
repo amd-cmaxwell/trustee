@@ -5,11 +5,15 @@ use std::sync::Arc;
 use anyhow::{anyhow, bail, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use key_value_storage::KeyValueStorage;
+use openssl::ec::EcKey;
+use openssl::pkey::Private;
 use policy_engine::policy::rego::Regorus;
 use policy_engine::PolicyEngine;
 use serde::{Deserialize, Serialize};
 use sev::firmware::guest::GuestPolicy;
-use sev::measurement::idblock_types::{FamilyId, IdBlock, ImageId};
+use sev::measurement::idblock_types::{
+    FamilyId, IdAuth, IdBlock, ImageId, SevEcdsaPubKey, DEFAULT_KEY_ALGO,
+};
 use sev::measurement::snp::{snp_calc_launch_digest, SnpMeasurementArgs};
 use sev::measurement::vcpu_types::CpuType;
 use sev::measurement::vmsa::{GuestFeatures, VMMType};
@@ -48,6 +52,10 @@ pub struct SnpMeasurementResponse {
     pub measurement: String,
     #[serde(skip_serializing_if = "Option::is_none", rename = "id-block")]
     pub id_block: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "id-auth")]
+    pub id_auth: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "id-key")]
+    pub id_key: Option<String>,
 }
 
 fn parse_id_bytes(hex_str: &str) -> Result<[u8; 16]> {
@@ -69,6 +77,8 @@ async fn read_mags(storage: &dyn KeyValueStorage) -> Result<u32> {
 
 pub struct MeasurementHandler {
     ovmf_file: PathBuf,
+    id_key: EcKey<Private>,
+    is_auth: bool,
     policy_engine: PolicyEngine<Regorus>,
     storage: Arc<dyn KeyValueStorage>,
 }
@@ -76,11 +86,15 @@ pub struct MeasurementHandler {
 impl MeasurementHandler {
     pub fn new(
         ovmf_file: PathBuf,
+        id_key: EcKey<Private>,
+        is_auth: bool,
         policy_engine: PolicyEngine<Regorus>,
         storage: Arc<dyn KeyValueStorage>,
     ) -> Self {
         Self {
             ovmf_file,
+            id_key,
+            is_auth,
             policy_engine,
             storage,
         }
@@ -92,23 +106,31 @@ impl RequestHandler for MeasurementHandler {
     async fn handle(&mut self, body: &[u8]) -> Result<Vec<u8>> {
         let req: SnpMeasurementRequest = serde_json::from_slice(body)?;
 
-        if let Ok(policy) = self.policy_engine.get_policy(LAUNCH_POLICY_ID).await {
-            let input = serde_json::to_string(&req)?;
-            let result = self
-                .policy_engine
-                .engine
-                .evaluate(None, input, policy, vec![POLICY_RULE.to_string()], vec![])
-                .await?;
+        if self.is_auth
+            && (req.family_id.is_none() || req.image_id.is_none() || req.guest_policy.is_none())
+        {
+            bail!("auth endpoint requires family_id, image_id, and guest_policy");
+        }
 
-            let authorized = result
-                .eval_rules_result
-                .get(POLICY_RULE)
-                .and_then(|v| v.as_ref())
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
+        if self.is_auth {
+            if let Ok(policy) = self.policy_engine.get_policy(LAUNCH_POLICY_ID).await {
+                let input = serde_json::to_string(&req)?;
+                let result = self
+                    .policy_engine
+                    .engine
+                    .evaluate(None, input, policy, vec![POLICY_RULE.to_string()], vec![])
+                    .await?;
 
-            if !authorized {
-                bail!("launch params rejected by SAMS policy");
+                let authorized = result
+                    .eval_rules_result
+                    .get(POLICY_RULE)
+                    .and_then(|v| v.as_ref())
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+
+                if !authorized {
+                    bail!("launch params rejected by SAMS policy");
+                }
             }
         }
 
@@ -146,32 +168,53 @@ impl RequestHandler for MeasurementHandler {
             .map_err(|e| anyhow!("failed to serialize launch digest: {e}"))?;
         let measurement = hex::encode(digest_bytes);
 
-        let id_block = match (&req.family_id, &req.image_id) {
-            (Some(fam), Some(img)) => {
-                let family_id = FamilyId::new(parse_id_bytes(fam)?);
-                let image_id = ImageId::new(parse_id_bytes(img)?);
-                let policy = req.guest_policy.map(GuestPolicy);
-                let guest_svn = read_mags(&*self.storage).await?;
+        let mut id_block_b64 = None;
+        let mut id_auth_b64 = None;
+        let mut id_key_b64 = None;
 
-                let block = IdBlock::new(
-                    Some(digest),
-                    Some(family_id),
-                    Some(image_id),
-                    Some(guest_svn),
-                    policy,
-                )?;
+        if let (Some(fam), Some(img)) = (&req.family_id, &req.image_id) {
+            let family_id = FamilyId::new(parse_id_bytes(fam)?);
+            let image_id = ImageId::new(parse_id_bytes(img)?);
+            let policy = req.guest_policy.map(GuestPolicy);
+            let guest_svn = read_mags(&*self.storage).await?;
 
-                let block_bytes = block
+            let block = IdBlock::new(
+                Some(digest),
+                Some(family_id),
+                Some(image_id),
+                Some(guest_svn),
+                policy,
+            )?;
+
+            let block_bytes = block
+                .to_bytes()
+                .map_err(|e| anyhow!("failed to serialize IdBlock: {e}"))?;
+            id_block_b64 = Some(STANDARD.encode(block_bytes.as_ref()));
+
+            if self.is_auth {
+                let id_auth = IdAuth::default()
+                    .sign_id_block(DEFAULT_KEY_ALGO, self.id_key.clone(), &block)
+                    .map_err(|e| anyhow!("failed to sign IdBlock: {e}"))?;
+
+                let auth_bytes = id_auth
                     .to_bytes()
-                    .map_err(|e| anyhow!("failed to serialize IdBlock: {e}"))?;
-                Some(STANDARD.encode(block_bytes.as_ref()))
+                    .map_err(|e| anyhow!("failed to serialize IdAuth: {e}"))?;
+                id_auth_b64 = Some(STANDARD.encode(auth_bytes.as_ref()));
+
+                let pub_key = SevEcdsaPubKey::try_from(&self.id_key)
+                    .map_err(|e| anyhow!("failed to extract SAMS public key: {e}"))?;
+                let key_bytes = pub_key
+                    .to_bytes()
+                    .map_err(|e| anyhow!("failed to serialize SAMS public key: {e}"))?;
+                id_key_b64 = Some(STANDARD.encode(key_bytes.as_ref()));
             }
-            _ => None,
-        };
+        }
 
         let resp = SnpMeasurementResponse {
             measurement,
-            id_block,
+            id_block: id_block_b64,
+            id_auth: id_auth_b64,
+            id_key: id_key_b64,
         };
         Ok(serde_json::to_vec(&resp)?)
     }
