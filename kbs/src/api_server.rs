@@ -2,10 +2,15 @@
 // Licensed under the Apache License, Version 2.0, see LICENSE for details.
 // SPDX-License-Identifier: Apache-2.0
 
+use std::any::Any;
 use std::collections::HashMap;
 
 use actix_web::{
-    http::{header::Header, Method},
+    dev::Extensions,
+    http::{
+        header::{Header, HeaderName, HeaderValue},
+        Method,
+    },
     middleware,
     web::{self, Query},
     App, HttpRequest, HttpResponse, HttpServer,
@@ -14,6 +19,7 @@ use actix_web_httpauth::headers::authorization::{Authorization, Bearer};
 use anyhow::Context;
 use base64::Engine;
 use key_value_storage::StorageProvider;
+use openssl::x509::X509;
 use policy_engine::{rego::Regorus, PolicyEngine};
 use serde_json::json;
 use tracing::{info, warn};
@@ -45,6 +51,18 @@ macro_rules! kbs_path {
     ($path:expr) => {
         format!("{}/{}", KBS_PREFIX, $path)
     };
+}
+
+const CLIENT_CERT_HEADER: &str = "x-client-cert";
+
+fn extract_peer_certificate(conn: &dyn Any, ext: &mut Extensions) {
+    if let Some(tls_stream) =
+        conn.downcast_ref::<actix_tls::accept::openssl::TlsStream<actix_web::rt::net::TcpStream>>()
+    {
+        if let Some(cert) = tls_stream.ssl().peer_certificate() {
+            ext.insert(cert);
+        }
+    }
 }
 
 /// The KBS API server
@@ -193,6 +211,10 @@ impl ApiServer {
         }
 
         if !http_config.insecure_http {
+            if http_config.tls.client_ca_cert.is_some() {
+                http_server = http_server.on_connect(extract_peer_certificate);
+            }
+
             let tls_server = http_server
                 .bind_openssl(
                     &http_config.sockets[..],
@@ -393,6 +415,19 @@ pub(crate) async fn api(
                 .await
                 .map_err(|e| Error::PluginInternalError { source: e })?;
 
+            let mut headers = request.headers().clone();
+            if !headers.contains_key(CLIENT_CERT_HEADER) {
+                let client_cert_val = request
+                    .conn_data::<X509>()
+                    .and_then(|cert| cert.to_pem().ok())
+                    .and_then(|pem| String::from_utf8(pem).ok())
+                    .and_then(|s| HeaderValue::from_str(&s).ok());
+
+                if let Some(val) = client_cert_val {
+                    headers.insert(HeaderName::from_static(CLIENT_CERT_HEADER), val);
+                }
+            }
+
             match auth_mode {
                 AuthMode::Admin => {
                     core.admin.check_admin_access(&request)?;
@@ -402,7 +437,7 @@ pub(crate) async fn api(
                             &query,
                             resource_path,
                             request.method(),
-                            request.headers(),
+                            &headers,
                             None,
                         )
                         .await
@@ -417,7 +452,7 @@ pub(crate) async fn api(
                             &query,
                             resource_path,
                             request.method(),
-                            request.headers(),
+                            &headers,
                             None,
                         )
                         .await
@@ -478,7 +513,7 @@ pub(crate) async fn api(
                             &query,
                             resource_path,
                             request.method(),
-                            request.headers(),
+                            &headers,
                             init_data,
                         )
                         .await

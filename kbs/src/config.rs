@@ -70,6 +70,12 @@ pub struct TlsConfig {
     /// TLS groups for key exchange (colon-separated list)
     #[serde(rename = "tls_groups")]
     pub groups: Option<String>,
+
+    /// CA certificate for client certificate verification (mTLS).
+    /// When set, the server requests and verifies client certificates
+    /// signed by this CA.
+    #[serde(rename = "tls_client_ca_cert")]
+    pub client_ca_cert: Option<PathBuf>,
 }
 
 impl TlsConfig {

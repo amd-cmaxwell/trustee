@@ -190,5 +190,12 @@ pub fn tls_config(config: &HttpServerConfig) -> Result<openssl::ssl::SslAcceptor
         info!("TLS groups (classical): {}", groups);
     }
 
+    if let Some(ca_cert) = &config.tls.client_ca_cert {
+        use openssl::ssl::SslVerifyMode;
+        builder.set_ca_file(ca_cert)?;
+        builder.set_verify(SslVerifyMode::PEER);
+        info!("mTLS enabled: client certificates will be requested and verified");
+    }
+
     Ok(builder)
 }
