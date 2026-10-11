@@ -12,6 +12,7 @@ use serde::Deserialize;
 use super::super::plugin_manager::ClientPlugin;
 
 mod api;
+use api::RequestHandler;
 mod backend;
 
 #[derive(Deserialize, Clone, Debug, PartialEq)]
@@ -31,22 +32,15 @@ impl TryFrom<SamsConfig> for Sams {
     }
 }
 
-#[derive(Deserialize)]
-struct TeeHint {
-    tee: Option<String>,
-}
-
-fn tee_from_body(body: &[u8]) -> Option<Tee> {
-    let hint: TeeHint = serde_json::from_slice(body).ok()?;
-    match hint.tee.as_deref() {
-        Some("snp") => Some(Tee::Snp),
-        _ => None,
+fn tee_from_path(tee_str: &str) -> Result<Tee> {
+    match tee_str {
+        "snp" => Ok(Tee::Snp),
+        other => bail!("unsupported TEE type: {other}"),
     }
 }
 
 impl Sams {
-    fn dispatch(&self, endpoint: &str, body: &[u8]) -> Result<Vec<u8>> {
-        let tee = tee_from_body(body);
+    fn dispatch(&self, endpoint: &str, tee: Tee, body: &[u8]) -> Result<Vec<u8>> {
         let mut handler = api::get_request_handler(endpoint, tee)?;
         handler.handle(body)
     }
@@ -62,14 +56,16 @@ impl ClientPlugin for Sams {
         method: &Method,
         _init_data: Option<&serde_json::Value>,
     ) -> Result<Vec<u8>> {
-        match (method.as_str(), path.first().copied()) {
-            ("POST", Some("measurement")) => self.dispatch("measurement", body),
-            ("POST", Some("launch-policy")) => self.dispatch("launch-policy", body),
-            _ => bail!(
-                "unsupported: {} /kbs/v0/sams/{}",
-                method,
-                path.join("/")
-            ),
+        match (method.as_str(), path) {
+            ("POST", ["measurement", tee_str, ..]) => {
+                let tee = tee_from_path(tee_str)?;
+                self.dispatch("measurement", tee, body)
+            }
+            ("POST", ["launch-policy", ..]) => {
+                let mut handler = api::get_launch_policy_handler();
+                handler.handle(body)
+            }
+            _ => bail!("unsupported: {} /kbs/v0/sams/{}", method, path.join("/")),
         }
     }
 
@@ -80,8 +76,8 @@ impl ClientPlugin for Sams {
         path: &[&str],
         method: &Method,
     ) -> Result<bool> {
-        match (method.as_str(), path.first().copied()) {
-            ("POST", Some("measurement")) => Ok(false),
+        match (method.as_str(), path) {
+            ("POST", ["measurement", ..]) => Ok(false),
             _ => Ok(true),
         }
     }

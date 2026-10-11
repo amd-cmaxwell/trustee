@@ -48,6 +48,8 @@ nebula-ca-plugin = []
 # Use HashiCorp Vault KV v1 as KBS backend
 vault = ["vaultrs"]
 
+# Use Signing, Authentication, & Measurement Service (SAMS) plugin
+sams = ["sev"]
 
 # Use AWS Secrets Manager as KBS resource backend
 aws = ["aws-config", "aws-sdk-secretsmanager"]
@@ -134,6 +136,7 @@ aws-sdk-secretsmanager = { version = "1", default-features = false, features = [
     "rt-tokio",
 ], optional = true }
 google-cloud-secretmanager-v1 = { version = "1.10", optional = true }
+sev = { version = "8", default-features = false, features = ["snp", "serde", "openssl"], optional = true }
 
 [target.'cfg(not(any(target_arch = "s390x", target_arch = "aarch64")))'.dependencies]
 attestation-service = { path = "../attestation-service", default-features = false, features = [
