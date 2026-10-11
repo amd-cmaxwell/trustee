@@ -68,6 +68,14 @@ pub enum Error {
         source: anyhow::Error,
     },
 
+    #[error("Plugin error ({status}): {message}")]
+    PluginError {
+        status: u16,
+        message: String,
+        #[source]
+        source: anyhow::Error,
+    },
+
     #[error("Access denied by policy")]
     PolicyDeny,
 
@@ -127,6 +135,10 @@ impl ResponseError for Error {
                 HttpResponse::NotFound()
             }
             Error::PolicyDeny => HttpResponse::Forbidden(),
+            Error::PluginError { status, .. } => HttpResponse::build(
+                actix_web::http::StatusCode::from_u16(*status)
+                    .unwrap_or(actix_web::http::StatusCode::INTERNAL_SERVER_ERROR),
+            ),
             _ => HttpResponse::Unauthorized(),
         };
 

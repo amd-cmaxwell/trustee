@@ -7,4 +7,4 @@ pub mod plugin_manager;
 pub mod implementations;
 pub use implementations::*;
 
-pub use plugin_manager::{AuthMode, PluginManager, PluginsConfig};
+pub use plugin_manager::{AuthMode, PluginHttpError, PluginManager, PluginsConfig};

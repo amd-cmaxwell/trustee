@@ -28,7 +28,7 @@ use crate::{
     admin::Admin,
     config::KbsConfig,
     jwe::jwe,
-    plugins::{AuthMode, PluginManager},
+    plugins::{AuthMode, PluginHttpError, PluginManager},
     prometheus::{
         ACTIVE_CONNECTIONS, BUILD_INFO, KBS_POLICY_APPROVALS, KBS_POLICY_ERRORS, KBS_POLICY_EVALS,
         KBS_POLICY_VIOLATIONS, REQUEST_DURATION, REQUEST_SIZES, REQUEST_TOTAL,
@@ -62,6 +62,17 @@ fn extract_peer_certificate(conn: &dyn Any, ext: &mut Extensions) {
         if let Some(cert) = tls_stream.ssl().peer_certificate() {
             ext.insert(cert);
         }
+    }
+}
+
+fn plugin_error(e: anyhow::Error) -> Error {
+    match e.downcast::<PluginHttpError>() {
+        Ok(http_err) => Error::PluginError {
+            status: http_err.status,
+            message: http_err.message.clone(),
+            source: http_err.into(),
+        },
+        Err(e) => Error::PluginInternalError { source: e },
     }
 }
 
@@ -413,7 +424,7 @@ pub(crate) async fn api(
             let auth_mode = plugin
                 .auth_mode(&body, &query, resource_path, request.method())
                 .await
-                .map_err(|e| Error::PluginInternalError { source: e })?;
+                .map_err(plugin_error)?;
 
             let mut headers = request.headers().clone();
             if !headers.contains_key(CLIENT_CERT_HEADER) {
@@ -441,7 +452,7 @@ pub(crate) async fn api(
                             None,
                         )
                         .await
-                        .map_err(|e| Error::PluginInternalError { source: e })?;
+                        .map_err(plugin_error)?;
 
                     Ok(HttpResponse::Ok().content_type("text/xml").body(response))
                 }
@@ -456,7 +467,7 @@ pub(crate) async fn api(
                             None,
                         )
                         .await
-                        .map_err(|e| Error::PluginInternalError { source: e })?;
+                        .map_err(plugin_error)?;
 
                     Ok(HttpResponse::Ok().content_type("text/xml").body(response))
                 }
@@ -517,7 +528,7 @@ pub(crate) async fn api(
                             init_data,
                         )
                         .await
-                        .map_err(|e| Error::PluginInternalError { source: e })?;
+                        .map_err(plugin_error)?;
 
                     if plugin
                         .encrypted(&body, &query, resource_path, request.method())
