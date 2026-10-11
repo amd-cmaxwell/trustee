@@ -38,6 +38,7 @@ pub fn get_request_handler(
     ovmf_file: &Path,
     id_key: EcKey<Private>,
     is_auth: bool,
+    rvps_address: Option<String>,
     policy_engine: PolicyEngine<Regorus>,
     storage: Arc<dyn KeyValueStorage>,
 ) -> Result<MeasurementHandler> {
@@ -46,6 +47,7 @@ pub fn get_request_handler(
             ovmf_file.to_path_buf(),
             id_key,
             is_auth,
+            rvps_address,
             policy_engine,
             storage,
         ))),

@@ -3,7 +3,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use actix_web::http::header::HeaderMap;
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 
 use crate::plugins::plugin_manager::PluginHttpError;
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -12,6 +12,7 @@ use openssl::ec::EcKey;
 use openssl::pkey::Private;
 use openssl::sha::sha256;
 use policy_engine::policy::rego::Regorus;
+use policy_engine::policy::rego::RegorusExtension;
 use policy_engine::PolicyEngine;
 use serde::{Deserialize, Serialize};
 use sev::firmware::guest::GuestPolicy;
@@ -102,6 +103,7 @@ pub struct MeasurementHandler {
     ovmf_file: PathBuf,
     id_key: EcKey<Private>,
     is_auth: bool,
+    rvps_address: Option<String>,
     policy_engine: PolicyEngine<Regorus>,
     storage: Arc<dyn KeyValueStorage>,
 }
@@ -111,6 +113,7 @@ impl MeasurementHandler {
         ovmf_file: PathBuf,
         id_key: EcKey<Private>,
         is_auth: bool,
+        rvps_address: Option<String>,
         policy_engine: PolicyEngine<Regorus>,
         storage: Arc<dyn KeyValueStorage>,
     ) -> Self {
@@ -118,6 +121,7 @@ impl MeasurementHandler {
             ovmf_file,
             id_key,
             is_auth,
+            rvps_address,
             policy_engine,
             storage,
         }
@@ -151,10 +155,42 @@ impl RequestHandler for MeasurementHandler {
                 }
                 let input = serde_json::to_string(&input_value)?;
 
+                let mut extensions = vec![];
+                if let Some(addr) = &self.rvps_address {
+                    let addr = addr.clone();
+                    let extension = RegorusExtension {
+                        name: "query_reference_value".to_string(),
+                        id: 1,
+                        extension: Box::new(move |params: Vec<regorus::Value>| {
+                            let param = params
+                                .first()
+                                .context("query_reference_value requires a parameter")?;
+                            let id = param.as_string().map(|s| s.to_string()).map_err(|_| {
+                                anyhow!("query_reference_value parameter must be a string")
+                            })?;
+                            let addr = addr.clone();
+                            let result = tokio::runtime::Handle::current().block_on(async {
+                                reference_value_provider_service::client::query(addr, id).await
+                            })?;
+                            match result {
+                                Some(v) => Ok(serde_json::from_str::<regorus::Value>(&v)?),
+                                None => Ok(regorus::Value::Null),
+                            }
+                        }),
+                    };
+                    extensions.push(extension);
+                }
+
                 let result = self
                     .policy_engine
                     .engine
-                    .evaluate(None, input, policy, vec![POLICY_RULE.to_string()], vec![])
+                    .evaluate(
+                        None,
+                        input,
+                        policy,
+                        vec![POLICY_RULE.to_string()],
+                        extensions,
+                    )
                     .await?;
 
                 let authorized = result

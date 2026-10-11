@@ -30,11 +30,14 @@ use backend::guest_owner::GuestOwnerHandler;
 pub struct SamsConfig {
     pub ovmf_file: PathBuf,
     pub id_key_file: PathBuf,
+    #[serde(default)]
+    pub rvps_address: Option<String>,
 }
 
 pub struct Sams {
     ovmf_file: PathBuf,
     id_key: EcKey<Private>,
+    rvps_address: Option<String>,
     policy_engine: PolicyEngine<Regorus>,
     storage: Arc<dyn KeyValueStorage>,
 }
@@ -50,6 +53,7 @@ impl Sams {
         Ok(Self {
             ovmf_file: config.ovmf_file,
             id_key,
+            rvps_address: config.rvps_address,
             policy_engine,
             storage,
         })
@@ -78,6 +82,7 @@ impl Sams {
             &self.ovmf_file,
             self.id_key.clone(),
             is_auth,
+            self.rvps_address.clone(),
             self.policy_engine.clone(),
             self.storage.clone(),
         )?;
