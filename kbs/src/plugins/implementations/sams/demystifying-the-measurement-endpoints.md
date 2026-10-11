@@ -51,7 +51,7 @@ the response body contains:
             `400 - Bad Request`
 # POST /kbs/v0/sams/measurement/snp/auth
 ## Headers
-`Authorization: Bearer <base64-encoded JWT containing the field "guest-owner-cert": "<mTLS Certificate>">`
+`Authorization: Bearer <signed JWT identifying the guest owner>`
 
 ## Request Body
 ```json
@@ -105,8 +105,8 @@ the response body contains:
             `400 - Bad Request`
         3. If CVM Launch is Forbidden by SAMS Policy:
             `403 - Forbidden` 
-2. **If ON TOP OF THAT, YOU SEND A Bearer Token containing an mTLS certificate for a *REGISTERED* guest-owner,** 
-***AND* SAMS Policy Approves of your launch params, ID Block Metadata, & mTLS certificate,** then
+2. **If ON TOP OF THAT, YOU SEND A Bearer Token containing a JWT for a *REGISTERED* guest-owner,** 
+***AND* SAMS Policy Approves of your launch params, ID Block Metadata, & guest-owner JWT,** then
 the response body contains:
     - Success Codes
         `200 - OK`
@@ -141,11 +141,11 @@ the response body contains:
             `401 - Unauthorized`
         5. If your Bearer Token is expired:
             `401 - Unauthorized`
-        4. If your Bearer Token doesn't contain a valid TLS Certificate:
+        4. If your Bearer Token doesn't contain a valid JWT:
             `401 - Unauthorized`
-        4. If the mTLS certificate in your Bearer Token is unknown to SAMS:
+        4. If the JWT in your Bearer Token is unknown to SAMS:
             `401 - Unauthorized`
-        6. If SAMS Policy rejects your Launch Params, ID Block Metadata, &/or mTLS Cert:
+        6. If SAMS Policy rejects your Launch Params, ID Block Metadata, &/or guest-owner JWT:
             `403 - Forbidden`
 
 

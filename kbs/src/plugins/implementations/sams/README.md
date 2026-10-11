@@ -35,7 +35,7 @@ API
 #### Requires Admin?
 - No
 #### Headers:
-- `Authorization: Bearer <JWT containing "guest-owner-cert": "<mTLS Certificate>">`  _(optional)_
+- `Authorization: Bearer <signed JWT identifying the guest owner>`  _(optional)_
 #### Request Params:
 - Same as `POST /measurement/<tee>/`, but IDBlock Metadata (FAMILY_ID, IMAGE_ID, & GUEST_POLICY) is **required**
 #### Response (progressive):
@@ -43,21 +43,21 @@ API
   - `"measurement"`, `"id-block"` (as above)
   - `"id-auth"` (base64-encoded IdAuth with SAMS-only signing: AuthKey fields zeroed)
   - `"id-key"` (SAMS Public Key)
-- **All of the above + registered guest-owner mTLS cert in Bearer Token:**
+- **All of the above + registered guest-owner JWT in Bearer Token:**
   - `"id-auth"` includes guest-owner signing (IdKeySig, AuthKeyAlgo, AuthKeyDigest populated)
   - `"author-key"` (Guest Owner Public Key)
 #### Error Codes:
 - `400` — missing required launch params or IDBlock metadata
-- `401` — malformed/expired Bearer Token, invalid cert, or unknown guest-owner
-- `403` — SAMS policy rejects launch params, IDBlock metadata, and/or mTLS cert
+- `401` — malformed/expired Bearer Token or unknown guest-owner
+- `403` — SAMS policy rejects launch params, IDBlock metadata, and/or guest-owner JWT
 
 ---
 
 ### POST /guest-owner
 #### Requires Admin?
-- No (mTLS-authenticated)
-#### Prerequisites:
-- Connection must use mTLS. Both the guest owner and SAMS must have leaf certificates issued by a mutually trusted TLS Certificate Authority.
+- No (JWT-authenticated)
+#### Headers:
+- `Authorization: Bearer <signed JWT identifying the guest owner>`
 #### Request Params:
 ```json
 {
@@ -66,14 +66,12 @@ API
 }
 ```
 #### Behavior:
-- Stores the guest owner's mTLS leaf cert in RVPS (keyed by `hash(<pubkey>)`)
-- Stores the guest owner's signing keypair in KBS (keyed by `hash(<leaf-cert>)`)
+- Stores the guest owner's JWT (keyed by `hash(<pubkey>)`)
+- Stores the guest owner's signing keypair (keyed by `hash(<jwt>)`)
 #### Expected usage:
 ```shell
 curl \
-    --cert guest-owner-mTLS-leaf-cert-chain.crt \
-    --key guest-owner-mTLS-leaf-cert-private-key.key \
-    --cacert ca.crt \
+    -H "Authorization: Bearer $GUEST_OWNER_JWT" \
     -X POST http://$kbs_host:$kbs_api_port/kbs/v0/sams/guest-owner \
     -d '{"pubkey": "...", "privkey": "..."}'
 ```
@@ -84,22 +82,19 @@ curl \
 
 ### DELETE /guest-owner
 #### Requires Admin?
-- No (mTLS-authenticated)
-#### Prerequisites:
-- Connection must use mTLS (same CA requirements as registration).
+- No (JWT-authenticated)
+#### Headers:
+- `Authorization: Bearer <signed JWT identifying the guest owner>`
 #### Behavior:
-Upon completion of the mTLS handshake:
-1. Hash the guest owner's leaf cert
-2. Retrieve the guest owner's signing keypair from KBS using that hash
-3. Hash the signing pubkey
-4. Remove the guest owner's leaf cert from RVPS (keyed by pubkey hash)
-5. Remove the guest owner's signing keypair from KBS (keyed by leaf cert hash)
+1. Hash the guest owner's JWT
+2. Retrieve the guest owner's signing keypair using that hash
+3. Hash the signing pubkey from the retrieved keypair
+4. Remove the guest owner's JWT (keyed by pubkey hash)
+5. Remove the guest owner's signing keypair (keyed by JWT hash)
 #### Expected usage:
 ```shell
 curl \
-    --cert guest-owner-mTLS-leaf-cert-chain.crt \
-    --key guest-owner-mTLS-leaf-cert-private-key.key \
-    --cacert ca.crt \
+    -H "Authorization: Bearer $GUEST_OWNER_JWT" \
     -X DELETE http://$kbs_host:$kbs_api_port/kbs/v0/sams/guest-owner
 ```
 
@@ -170,7 +165,7 @@ If `requirePreVerification` is not true, the current (non-SAMS) flow is used and
 the CVM is launched without an ID Block.
 
 When the request targets the `/auth` endpoint and includes a Bearer Token with a
-registered guest owner's mTLS certificate, SAMS also signs the IDKey with the
+registered guest owner's JWT, SAMS also signs the IDKey with the
 guest owner's private key (stored in KBS), producing a full IdAuth with non-zero
 AuthKey fields. See [Addendum on Dynamic Auth Keys](addendum-on-dynamic-auth-keys.md)
 for the full design rationale.
@@ -200,9 +195,9 @@ sequenceDiagram
         note over kata_runtime, sams: LaunchParams = {vcpus, ovmf_hash,<br>kernel_hash, initrd_hash, ...}
         note over kata_runtime, sams: ID Block Metadata = {family_id,<br>image_id, guest_policy}
 
-        opt Guest-owner cert in Bearer Token
-            sams ->> kbs: Retrieve guest-owner signing keypair<br>(keyed by hash of mTLS cert)
-            break Cert unknown to KBS
+        opt Guest-owner JWT in Bearer Token
+            sams ->> kbs: Retrieve guest-owner signing keypair<br>(keyed by hash of JWT)
+            break JWT unknown to KBS
                 sams -->> kata_runtime: 401 - Unauthorized
             end
             kbs -->> sams: Guest-owner keypair
@@ -211,8 +206,8 @@ sequenceDiagram
         opt Pre-Verification against RVPS
             sams ->> policy_engine: Register query_reference_value extension
             sams ->> policy_engine: Evaluate Launch policy
-            note over sams, policy_engine: input = LaunchParams<br>(+ mTLS cert if present)<br>rules = [data.policy.authorized,<br>data.policy.extensions]
-            note over policy_engine: Policy can also assert on<br>mTLS cert fields<br>(Subject, Extensions, etc.)
+            note over sams, policy_engine: input = LaunchParams<br>(+ guest-owner JWT if present)<br>rules = [data.policy.authorized,<br>data.policy.extensions]
+            note over policy_engine: Policy can also assert on<br>guest-owner JWT claims
             policy_engine ->> rvps: Query reference values (per rule)
             rvps -->> policy_engine: Reference values
             policy_engine ->> policy_engine: Compare launch params against values
@@ -234,11 +229,11 @@ sequenceDiagram
         alt /measurement/snp (unauthenticated)
             sams -->> kata_runtime: ID Block response
             note over sams, kata_runtime: Response contains:<br>- measurement<br>- id-block (if IDBlock metadata provided)
-        else /measurement/snp/auth (no guest-owner cert)
+        else /measurement/snp/auth (no guest-owner JWT)
             sams ->> sams: Create IdAuth (SAMS-only signing,<br>AuthKey fields zeroed)
             sams -->> kata_runtime: ID Block + IdAuth response
             note over sams, kata_runtime: Response contains:<br>- measurement, id-block<br>- id-auth (SAMS-only)<br>- id-key (SAMS PubKey)
-        else /measurement/snp/auth (with guest-owner cert)
+        else /measurement/snp/auth (with guest-owner JWT)
             sams ->> sams: Sign IDKey with guest-owner PrivKey
             sams ->> sams: Create IdAuth (full signing)
             sams -->> kata_runtime: ID Block + IdAuth response
@@ -351,8 +346,8 @@ Policy provisions can query RVPS for reference values, verify the reported GUEST
 the Minimum Acceptable Guest SVN (MAGS) from RVPS, and verify the Trustee endorsement by
 comparing the IDKeyDigest against acceptable SAMS public key hashes from RVPS. When a
 guest owner registered their signing keypair via SAMS, verifier policies can also look up
-the guest owner's mTLS leaf cert from RVPS using the AuthKeyDigest as the retrieval key,
-and make assertions about the certificate's Subject and Extensions fields. Any mismatch
+the guest owner's JWT from RVPS using the AuthKeyDigest as the retrieval key,
+and make assertions about the JWT's claims. Any mismatch
 adjusts the trust claims at a severity determined by the Verifier Policy Owner. The final
 result is an EAR token encoding the TEE's trustworthiness vector.
 
@@ -426,10 +421,10 @@ sequenceDiagram
         end
 
         opt Verify Guest Owner identity (AuthKeyDigest)
-            policy_engine ->> rvps: Retrieve guest-owner mTLS leaf cert<br>(keyed by AuthKeyDigest)
-            rvps -->> policy_engine: Guest-owner mTLS certificate
-            policy_engine ->> policy_engine: Assert against cert fields<br>(Subject, Extensions, etc.)
-            break Guest-owner cert assertion fails
+            policy_engine ->> rvps: Retrieve guest-owner JWT<br>(keyed by AuthKeyDigest)
+            rvps -->> policy_engine: Guest-owner JWT
+            policy_engine ->> policy_engine: Assert against JWT claims
+            break Guest-owner JWT assertion fails
                 policy_engine ->> policy_engine: Adjust trust claims
                 note over policy_engine: Severity determined by<br>Verifier Policy Owner
             end
@@ -551,5 +546,5 @@ curl -X POST \
 Design Documents
 ---
 - [Demystifying the Measurement Endpoints](demystifying-the-measurement-endpoints.md) — detailed request/response schemas for `/measurement/snp` and `/measurement/snp/auth`
-- [Addendum on Dynamic Auth Keys](addendum-on-dynamic-auth-keys.md) — guest-owner registration, mTLS authentication, and dynamic AuthKey signing design
+- [Addendum on Dynamic Auth Keys](addendum-on-dynamic-auth-keys.md) — guest-owner registration, JWT authentication, and dynamic AuthKey signing design
 - [Improvements & Open Questions](IMPROVEMENTS.md) — tracked improvements and open design questions
