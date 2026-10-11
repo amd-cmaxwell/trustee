@@ -4,10 +4,14 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use actix_web::http::Method;
 use anyhow::{bail, Result};
 use kbs_types::Tee;
+use key_value_storage::{KeyValueStorage, StorageProvider};
+use policy_engine::policy::rego::Regorus;
+use policy_engine::PolicyEngine;
 use serde::Deserialize;
 
 use super::super::plugin_manager::ClientPlugin;
@@ -23,14 +27,21 @@ pub struct SamsConfig {
 
 pub struct Sams {
     ovmf_file: PathBuf,
+    policy_engine: PolicyEngine<Regorus>,
+    storage: Arc<dyn KeyValueStorage>,
 }
 
-impl TryFrom<SamsConfig> for Sams {
-    type Error = anyhow::Error;
-
-    fn try_from(value: SamsConfig) -> anyhow::Result<Self> {
+impl Sams {
+    pub async fn new(
+        config: SamsConfig,
+        storage_provider: Arc<dyn StorageProvider>,
+    ) -> Result<Self> {
+        let storage = storage_provider.get_or_register("sams").await?;
+        let policy_engine = PolicyEngine::<Regorus>::new(storage.clone());
         Ok(Self {
-            ovmf_file: value.ovmf_file,
+            ovmf_file: config.ovmf_file,
+            policy_engine,
+            storage,
         })
     }
 }
@@ -43,9 +54,15 @@ fn tee_from_path(tee_str: &str) -> Result<Tee> {
 }
 
 impl Sams {
-    fn dispatch(&self, endpoint: &str, tee: Tee, body: &[u8]) -> Result<Vec<u8>> {
-        let mut handler = api::get_request_handler(endpoint, tee, &self.ovmf_file)?;
-        handler.handle(body)
+    async fn dispatch(&self, endpoint: &str, tee: Tee, body: &[u8]) -> Result<Vec<u8>> {
+        let mut handler = api::get_request_handler(
+            endpoint,
+            tee,
+            &self.ovmf_file,
+            self.policy_engine.clone(),
+            self.storage.clone(),
+        )?;
+        handler.handle(body).await
     }
 }
 
@@ -62,11 +79,14 @@ impl ClientPlugin for Sams {
         match (method.as_str(), path) {
             ("POST", ["measurement", tee_str, ..]) => {
                 let tee = tee_from_path(tee_str)?;
-                self.dispatch("measurement", tee, body)
+                self.dispatch("measurement", tee, body).await
             }
             ("POST", ["launch-policy", ..]) => {
-                let mut handler = api::get_launch_policy_handler();
-                handler.handle(body)
+                let mut handler = api::get_launch_policy_handler(
+                    self.policy_engine.clone(),
+                    self.storage.clone(),
+                );
+                handler.handle(body).await
             }
             _ => bail!("unsupported: {} /kbs/v0/sams/{}", method, path.join("/")),
         }

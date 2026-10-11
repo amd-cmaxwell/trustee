@@ -160,7 +160,9 @@ impl PluginsConfig {
             }
             #[cfg(feature = "sams")]
             PluginsConfig::Sams(cfg) => {
-                let sams = Sams::try_from(cfg).context("Initialize 'SAMS' plugin failed")?;
+                let sams = Sams::new(cfg, storage_provider)
+                    .await
+                    .context("Initialize 'SAMS' plugin failed")?;
                 Arc::new(sams) as _
             }
         };
