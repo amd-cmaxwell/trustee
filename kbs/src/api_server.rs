@@ -22,7 +22,7 @@ use crate::{
     admin::Admin,
     config::KbsConfig,
     jwe::jwe,
-    plugins::PluginManager,
+    plugins::{AuthMode, PluginManager},
     prometheus::{
         ACTIVE_CONNECTIONS, BUILD_INFO, KBS_POLICY_APPROVALS, KBS_POLICY_ERRORS, KBS_POLICY_EVALS,
         KBS_POLICY_VIOLATIONS, REQUEST_DURATION, REQUEST_SIZES, REQUEST_TOTAL,
@@ -388,88 +388,119 @@ pub(crate) async fn api(
                 })?;
 
             let body = body.to_vec();
-            if plugin
-                .validate_auth(&body, &query, resource_path, request.method())
+            let auth_mode = plugin
+                .auth_mode(&body, &query, resource_path, request.method())
                 .await
-                .map_err(|e| Error::PluginInternalError { source: e })?
-            {
-                // Plugin calls need to be authorized by the admin auth
-                core.admin.check_admin_access(&request)?;
-                let response = plugin
-                    .handle(&body, &query, resource_path, request.method(), None)
-                    .await
-                    .map_err(|e| Error::PluginInternalError { source: e })?;
+                .map_err(|e| Error::PluginInternalError { source: e })?;
 
-                Ok(HttpResponse::Ok().content_type("text/xml").body(response))
-            } else {
-                // Plugin calls need to be authorized by the Token and policy
-                let token = core
-                    .get_attestation_token(&request)
-                    .await
-                    .map_err(|_| Error::TokenNotFound)?;
+            match auth_mode {
+                AuthMode::Admin => {
+                    core.admin.check_admin_access(&request)?;
+                    let response = plugin
+                        .handle_with_headers(
+                            &body,
+                            &query,
+                            resource_path,
+                            request.method(),
+                            request.headers(),
+                            None,
+                        )
+                        .await
+                        .map_err(|e| Error::PluginInternalError { source: e })?;
 
-                let claims = core.token_verifier.verify(token)?;
-
-                let claim_str = serde_json::to_string(&claims)?;
-
-                KBS_POLICY_EVALS.inc();
-                // TODO: add policy filter support for other plugins
-                if !core
-                    .policy_engine
-                    .evaluate_rego(
-                        Some(policy_data_str),
-                        claim_str,
-                        KBS_POLICY_ID,
-                        vec![KBS_POLICY_RULE.to_string()],
-                        vec![],
-                    )
-                    .await
-                    .inspect_err(|_| KBS_POLICY_ERRORS.inc())?
-                    .eval_rules_result
-                    .get(KBS_POLICY_RULE)
-                    .expect("`data.policy.allow` rule not put as parameter found")
-                    .as_ref()
-                    .unwrap_or_else(|| {
-                        warn!("The KBS Resource Policy does not define the `{KBS_POLICY_RULE}` rule, use false as default" );
-                        KBS_POLICY_ERRORS.inc();
-                        &serde_json::Value::Bool(false)
-                    })
-                    .as_bool()
-                    .unwrap_or_else(|| {
-                        warn!("`{KBS_POLICY_RULE}` rule result is not a boolean, use false as default");
-                        KBS_POLICY_ERRORS.inc();
-                        false
-                    })
-                {
-                    KBS_POLICY_VIOLATIONS.inc();
-                    return Err(Error::PolicyDeny);
+                    Ok(HttpResponse::Ok().content_type("text/xml").body(response))
                 }
-                KBS_POLICY_APPROVALS.inc();
+                AuthMode::Plugin => {
+                    let response = plugin
+                        .handle_with_headers(
+                            &body,
+                            &query,
+                            resource_path,
+                            request.method(),
+                            request.headers(),
+                            None,
+                        )
+                        .await
+                        .map_err(|e| Error::PluginInternalError { source: e })?;
 
-                let init_data = claims
-                    .pointer("/submods/cpu0/ear.veraison.annotated-evidence/init_data_claims");
-
-                let response = plugin
-                    .handle(&body, &query, resource_path, request.method(), init_data)
-                    .await
-                    .map_err(|e| Error::PluginInternalError { source: e })?;
-
-                if plugin
-                    .encrypted(&body, &query, resource_path, request.method())
-                    .await
-                    .map_err(|e| Error::PluginInternalError { source: e })?
-                {
-                    let public_key = core.token_verifier.extract_tee_public_key(claims)?;
-
-                    let jwe =
-                        jwe(public_key, response).map_err(|e| Error::JweError { source: e })?;
-                    let res = serde_json::to_string(&jwe)?;
-                    return Ok(HttpResponse::Ok()
-                        .content_type("application/json")
-                        .body(res));
+                    Ok(HttpResponse::Ok().content_type("text/xml").body(response))
                 }
+                AuthMode::Attestation => {
+                    let token = core
+                        .get_attestation_token(&request)
+                        .await
+                        .map_err(|_| Error::TokenNotFound)?;
 
-                Ok(HttpResponse::Ok().content_type("text/xml").body(response))
+                    let claims = core.token_verifier.verify(token)?;
+
+                    let claim_str = serde_json::to_string(&claims)?;
+
+                    KBS_POLICY_EVALS.inc();
+                    // TODO: add policy filter support for other plugins
+                    if !core
+                        .policy_engine
+                        .evaluate_rego(
+                            Some(policy_data_str),
+                            claim_str,
+                            KBS_POLICY_ID,
+                            vec![KBS_POLICY_RULE.to_string()],
+                            vec![],
+                        )
+                        .await
+                        .inspect_err(|_| KBS_POLICY_ERRORS.inc())?
+                        .eval_rules_result
+                        .get(KBS_POLICY_RULE)
+                        .expect("`data.policy.allow` rule not put as parameter found")
+                        .as_ref()
+                        .unwrap_or_else(|| {
+                            warn!("The KBS Resource Policy does not define the `{KBS_POLICY_RULE}` rule, use false as default" );
+                            KBS_POLICY_ERRORS.inc();
+                            &serde_json::Value::Bool(false)
+                        })
+                        .as_bool()
+                        .unwrap_or_else(|| {
+                            warn!("`{KBS_POLICY_RULE}` rule result is not a boolean, use false as default");
+                            KBS_POLICY_ERRORS.inc();
+                            false
+                        })
+                    {
+                        KBS_POLICY_VIOLATIONS.inc();
+                        return Err(Error::PolicyDeny);
+                    }
+                    KBS_POLICY_APPROVALS.inc();
+
+                    let init_data = claims
+                        .pointer("/submods/cpu0/ear.veraison.annotated-evidence/init_data_claims");
+
+                    let response = plugin
+                        .handle_with_headers(
+                            &body,
+                            &query,
+                            resource_path,
+                            request.method(),
+                            request.headers(),
+                            init_data,
+                        )
+                        .await
+                        .map_err(|e| Error::PluginInternalError { source: e })?;
+
+                    if plugin
+                        .encrypted(&body, &query, resource_path, request.method())
+                        .await
+                        .map_err(|e| Error::PluginInternalError { source: e })?
+                    {
+                        let public_key = core.token_verifier.extract_tee_public_key(claims)?;
+
+                        let jwe =
+                            jwe(public_key, response).map_err(|e| Error::JweError { source: e })?;
+                        let res = serde_json::to_string(&jwe)?;
+                        return Ok(HttpResponse::Ok()
+                            .content_type("application/json")
+                            .body(res));
+                    }
+
+                    Ok(HttpResponse::Ok().content_type("text/xml").body(response))
+                }
             }
         }
     }
