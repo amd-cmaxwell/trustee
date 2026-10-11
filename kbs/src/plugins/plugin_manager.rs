@@ -23,6 +23,9 @@ use super::{Pkcs11Backend, Pkcs11Config};
 #[cfg(feature = "external-plugin")]
 use super::{ExternalPlugin, ExternalPluginConfig};
 
+#[cfg(feature = "sams")]
+use super::{Sams, SamsConfig};
+
 type ClientPluginInstance = Arc<dyn ClientPlugin>;
 
 #[async_trait::async_trait]
@@ -88,6 +91,10 @@ pub enum PluginsConfig {
 
     #[serde(alias = "provisioner")]
     Provisioner(ProvisionerConfig),
+
+    #[cfg(feature = "sams")]
+    #[serde(alias = "sams")]
+    Sams(SamsConfig),
 }
 
 impl Display for PluginsConfig {
@@ -102,6 +109,8 @@ impl Display for PluginsConfig {
             #[cfg(feature = "external-plugin")]
             PluginsConfig::ExternalPlugin(_) => f.write_str("external"),
             PluginsConfig::Provisioner(_) => f.write_str("provisioner"),
+            #[cfg(feature = "sams")]
+            PluginsConfig::Sams(_) => f.write_str("sams"),
         }
     }
 }
@@ -148,6 +157,11 @@ impl PluginsConfig {
                     .await
                     .context("Initialize 'Provisioner' plugin failed")?;
                 Arc::new(prov) as _
+            }
+            #[cfg(feature = "sams")]
+            PluginsConfig::Sams(cfg) => {
+                let sams = Sams::try_from(cfg).context("Initialize 'SAMS' plugin failed")?;
+                Arc::new(sams) as _
             }
         };
 

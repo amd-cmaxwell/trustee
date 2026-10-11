@@ -4,13 +4,17 @@ use serde::{Deserialize, Serialize};
 use super::super::api::RequestHandler;
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 pub struct LaunchPolicyRequest {
     pub policy: String,
+    #[serde(default)]
+    pub incr_gsvn: bool,
 }
 
 #[derive(Serialize)]
+#[allow(dead_code)]
 pub struct LaunchPolicyResponse {
-    pub accepted: bool,
+    pub gsvn: u32,
 }
 
 pub struct LaunchPolicyHandler;
