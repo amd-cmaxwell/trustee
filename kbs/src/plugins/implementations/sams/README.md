@@ -23,11 +23,11 @@ API
 - A JSON Object containing:
 1. All params required to create a Launch Measurement (e.g. vcpus, vcpu_type, vmm_type, guest_features, append)
 2. Precomputed hashes of the Kernel, Initrd, & OVMF (e.g. kernel_hash_str, initrd_hash_str, ovmf_hash_str)
-3. [Optional] IDBlock Metadata: FAMILY_ID & IMAGE_ID
+3. [Optional] IDBlock Metadata: FAMILY_ID, IMAGE_ID, & GUEST_POLICY
 
 #### Response (progressive):
 - **Launch params only:** `{"measurement": "<launch measurement>"}`
-- **Launch params + IDBlock Metadata:** adds `"id-block"` (base64-encoded IDBlock containing the measurement, FAMILY_ID, IMAGE_ID, and GUEST_SVN set to the current MAGS from RVPS)
+- **Launch params + IDBlock Metadata:** adds `"id-block"` (base64-encoded IDBlock containing the measurement, FAMILY_ID, IMAGE_ID, GUEST_POLICY, and GUEST_SVN set to the current MAGS from RVPS)
 
 ---
 
@@ -37,7 +37,7 @@ API
 #### Headers:
 - `Authorization: Bearer <JWT containing "guest-owner-cert": "<mTLS Certificate>">`  _(optional)_
 #### Request Params:
-- Same as `POST /measurement/<tee>/`, but IDBlock Metadata (FAMILY_ID & IMAGE_ID) is **required**
+- Same as `POST /measurement/<tee>/`, but IDBlock Metadata (FAMILY_ID, IMAGE_ID, & GUEST_POLICY) is **required**
 #### Response (progressive):
 - **Launch params + IDBlock Metadata + SAMS policy approval:**
   - `"measurement"`, `"id-block"` (as above)

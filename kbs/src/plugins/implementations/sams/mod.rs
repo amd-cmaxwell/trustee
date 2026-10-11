@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use actix_web::http::Method;
 use anyhow::{bail, Result};
@@ -17,18 +18,20 @@ mod backend;
 
 #[derive(Deserialize, Clone, Debug, PartialEq)]
 pub struct SamsConfig {
-    pub item: String,
+    pub ovmf_file: PathBuf,
 }
 
 pub struct Sams {
-    _item: String,
+    ovmf_file: PathBuf,
 }
 
 impl TryFrom<SamsConfig> for Sams {
     type Error = anyhow::Error;
 
     fn try_from(value: SamsConfig) -> anyhow::Result<Self> {
-        Ok(Self { _item: value.item })
+        Ok(Self {
+            ovmf_file: value.ovmf_file,
+        })
     }
 }
 
@@ -41,7 +44,7 @@ fn tee_from_path(tee_str: &str) -> Result<Tee> {
 
 impl Sams {
     fn dispatch(&self, endpoint: &str, tee: Tee, body: &[u8]) -> Result<Vec<u8>> {
-        let mut handler = api::get_request_handler(endpoint, tee)?;
+        let mut handler = api::get_request_handler(endpoint, tee, &self.ovmf_file)?;
         handler.handle(body)
     }
 }
