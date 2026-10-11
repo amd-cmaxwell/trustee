@@ -20,31 +20,14 @@ impl RequestHandler for MeasurementHandler {
     }
 }
 
-pub enum SamsHandler {
-    Measurement(MeasurementHandler),
-    LaunchPolicy(LaunchPolicyHandler),
-}
-
-impl SamsHandler {
-    pub fn handle(&mut self, body: &[u8]) -> Result<Vec<u8>> {
-        match self {
-            Self::Measurement(h) => h.handle(body),
-            Self::LaunchPolicy(h) => h.handle(body),
-        }
-    }
-}
-
-pub fn get_request_handler(req_type: &str, tee: Option<Tee>) -> Result<SamsHandler> {
-    match req_type {
-        "measurement" => {
-            let tee = tee.ok_or_else(|| anyhow!("measurement endpoint requires a TEE type"))?;
-            let handler = match tee {
-                Tee::Snp => MeasurementHandler::Snp(SnpMeasurementHandler),
-                other => return Err(anyhow!("unsupported TEE type for measurement: {other:?}")),
-            };
-            Ok(SamsHandler::Measurement(handler))
-        }
-        "launch-policy" => Ok(SamsHandler::LaunchPolicy(LaunchPolicyHandler)),
+pub fn get_request_handler(req_type: &str, tee: Tee) -> Result<MeasurementHandler> {
+    match (req_type, tee) {
+        ("measurement", Tee::Snp) => Ok(MeasurementHandler::Snp(SnpMeasurementHandler)),
+        ("measurement", other) => Err(anyhow!("unsupported TEE type for measurement: {other:?}")),
         _ => Err(anyhow!("unsupported request type: {req_type}")),
     }
+}
+
+pub fn get_launch_policy_handler() -> LaunchPolicyHandler {
+    LaunchPolicyHandler
 }
