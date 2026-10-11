@@ -12,25 +12,98 @@ Why?
 
 API
 ---
-### POST /measurement/< tee >/
+
+> For full request/response schemas see [Demystifying the Measurement Endpoints](demystifying-the-measurement-endpoints.md).
+> For the dynamic auth key design rationale see [Addendum on Dynamic Auth Keys](addendum-on-dynamic-auth-keys.md).
+
+### POST /measurement/\<tee\>/
 #### Requires Admin?
 - No
 #### Request Params:
 - A JSON Object containing:
-1. All params required to create an SNP Launch Measurement, EXCEPT for the Kernel, Initrd, & OVMF files
-2. Precomputed measurements (cryptographic hashes) of the Kernel, Initrd, & OVMF
-3. [Optional] The FAMILY_ID, IMAGE_ID, GUEST_POLICY, & ID-BLOCK ABI VERSION being used to identify the CVM
+1. All params required to create a Launch Measurement (e.g. vcpus, vcpu_type, vmm_type, guest_features, append)
+2. Precomputed hashes of the Kernel, Initrd, & OVMF (e.g. kernel_hash_str, initrd_hash_str, ovmf_hash_str)
+3. [Optional] IDBlock Metadata: FAMILY_ID & IMAGE_ID
 
-#### Request Response Body:
-- A JSON Object containing 5 fields:
-1. A Launch Measurement constructed from the provided params & pre-computed measurements
-2. A base64-encoded ID-Block structure generated from the Launch Measurement, fit to be passed into the hypervisor (qemu) when launching the CVM
-    > Note the encoded structure will contain a SAMS-designated GUEST_SVN number
-3. ID_BLOCK_ALO - The signing algorithm used w/ the ID-Block & the ID_KEY to produce the ID_BLOCK_SIG
-4. ID_BLOCK_SIG - The signature produced by running the ID-Block & the ID_PRIVATE_KEY (SAMS Private Key) through the ID_BLOCK_ALO algorithm
-5. ID_KEY - The Public Key associated with (SAMS) which can be used to verify the ID_BLOCK_SIG
+#### Response (progressive):
+- **Launch params only:** `{"measurement": "<launch measurement>"}`
+- **Launch params + IDBlock Metadata:** adds `"id-block"` (base64-encoded IDBlock containing the measurement, FAMILY_ID, IMAGE_ID, and GUEST_SVN set to the current MAGS from RVPS)
 
+---
+
+### POST /measurement/\<tee\>/auth
+#### Requires Admin?
+- No
+#### Headers:
+- `Authorization: Bearer <JWT containing "guest-owner-cert": "<mTLS Certificate>">`  _(optional)_
+#### Request Params:
+- Same as `POST /measurement/<tee>/`, but IDBlock Metadata (FAMILY_ID & IMAGE_ID) is **required**
+#### Response (progressive):
+- **Launch params + IDBlock Metadata + SAMS policy approval:**
+  - `"measurement"`, `"id-block"` (as above)
+  - `"id-auth"` (base64-encoded IdAuth with SAMS-only signing: AuthKey fields zeroed)
+  - `"id-key"` (SAMS Public Key)
+- **All of the above + registered guest-owner mTLS cert in Bearer Token:**
+  - `"id-auth"` includes guest-owner signing (IdKeySig, AuthKeyAlgo, AuthKeyDigest populated)
+  - `"author-key"` (Guest Owner Public Key)
+#### Error Codes:
+- `400` — missing required launch params or IDBlock metadata
+- `401` — malformed/expired Bearer Token, invalid cert, or unknown guest-owner
+- `403` — SAMS policy rejects launch params, IDBlock metadata, and/or mTLS cert
+
+---
+
+### POST /guest-owner
+#### Requires Admin?
+- No (mTLS-authenticated)
+#### Prerequisites:
+- Connection must use mTLS. Both the guest owner and SAMS must have leaf certificates issued by a mutually trusted TLS Certificate Authority.
+#### Request Params:
+```json
+{
+    "pubkey": "<Guest Owner Signing Public Key>",
+    "privkey": "<Guest Owner Signing Private Key>"
+}
+```
+#### Behavior:
+- Stores the guest owner's mTLS leaf cert in RVPS (keyed by `hash(<pubkey>)`)
+- Stores the guest owner's signing keypair in KBS (keyed by `hash(<leaf-cert>)`)
 #### Expected usage:
+```shell
+curl \
+    --cert guest-owner-mTLS-leaf-cert-chain.crt \
+    --key guest-owner-mTLS-leaf-cert-private-key.key \
+    --cacert ca.crt \
+    -X POST http://$kbs_host:$kbs_api_port/kbs/v0/sams/guest-owner \
+    -d '{"pubkey": "...", "privkey": "..."}'
+```
+
+> See [Addendum on Dynamic Auth Keys](addendum-on-dynamic-auth-keys.md) for the full design rationale.
+
+---
+
+### DELETE /guest-owner
+#### Requires Admin?
+- No (mTLS-authenticated)
+#### Prerequisites:
+- Connection must use mTLS (same CA requirements as registration).
+#### Behavior:
+Upon completion of the mTLS handshake:
+1. Hash the guest owner's leaf cert
+2. Retrieve the guest owner's signing keypair from KBS using that hash
+3. Hash the signing pubkey
+4. Remove the guest owner's leaf cert from RVPS (keyed by pubkey hash)
+5. Remove the guest owner's signing keypair from KBS (keyed by leaf cert hash)
+#### Expected usage:
+```shell
+curl \
+    --cert guest-owner-mTLS-leaf-cert-chain.crt \
+    --key guest-owner-mTLS-leaf-cert-private-key.key \
+    --cacert ca.crt \
+    -X DELETE http://$kbs_host:$kbs_api_port/kbs/v0/sams/guest-owner
+```
+
+---
 
 ##### SEV SNP ID-BLOCK Backend
 The attestation flow using ID Block is broken into the following phases:
@@ -96,11 +169,14 @@ that stale ID Blocks can be rejected during attestation.
 If `requirePreVerification` is not true, the current (non-SAMS) flow is used and
 the CVM is launched without an ID Block.
 
-> **TODO** Need to update `sev` crate to support creating `IdAuth` (IDBlock Signing Metadata) from provided `IDBlockSig`'s.
->> This facilitates allowing Kata-Runtime to Sign the IDKey provided by SAMS and set the Signature & AuthKey into the `IDAuth`
+When the request targets the `/auth` endpoint and includes a Bearer Token with a
+registered guest owner's mTLS certificate, SAMS also signs the IDKey with the
+guest owner's private key (stored in KBS), producing a full IdAuth with non-zero
+AuthKey fields. See [Addendum on Dynamic Auth Keys](addendum-on-dynamic-auth-keys.md)
+for the full design rationale.
 
 > **TODO** Need to update `sev` crate to verify `IDBlockSig` when provided an IDBlock & an IDKey (PubKey)
->> This facilitates allowing Kata-Runtime to confirm that the IDBlock, IDBlockSign, & IDKey SAMS returns actually match. 
+>> This facilitates allowing Kata-Runtime to confirm that the IDBlock, IDBlockSig, & IDKey SAMS returns actually match.
 >> Note: This check already happens in the SNP Firmware, but for completeness sake this functionality should also be exposed in the `sev` crate.
 
 > **TODO** Need to update `sev` crate to be able to compute Launch Measurements when provided with KernelHashes, Initrd Hashes, & OVMF Hashes in addition to files.
@@ -113,20 +189,30 @@ sequenceDiagram
     participant sams as SAMS Plugin
     participant policy_engine as Policy Engine<br>(Regorus)
     participant rvps as RVPS
+    participant kbs as KBS
 
     alt requirePreVerification is NOT true
         note left of kata_runtime: Fallback: launch CVM<br>without ID Block<br>(current flow)
     else requirePreVerification is true
-        kata_runtime ->> api: POST /measurement/snp
+        kata_runtime ->> api: POST /measurement/snp<br>or POST /measurement/snp/auth
         api ->> sams: Forward request
 
         note over kata_runtime, sams: LaunchParams = {vcpus, ovmf_hash,<br>kernel_hash, initrd_hash, ...}
         note over kata_runtime, sams: ID Block Metadata = {family_id,<br>image_id, guest_policy}
 
+        opt Guest-owner cert in Bearer Token
+            sams ->> kbs: Retrieve guest-owner signing keypair<br>(keyed by hash of mTLS cert)
+            break Cert unknown to KBS
+                sams -->> kata_runtime: 401 - Unauthorized
+            end
+            kbs -->> sams: Guest-owner keypair
+        end
+
         opt Pre-Verification against RVPS
             sams ->> policy_engine: Register query_reference_value extension
             sams ->> policy_engine: Evaluate Launch policy
-            note over sams, policy_engine: input = LaunchParams<br>rules = [data.policy.authorized,<br>data.policy.extensions]
+            note over sams, policy_engine: input = LaunchParams<br>(+ mTLS cert if present)<br>rules = [data.policy.authorized,<br>data.policy.extensions]
+            note over policy_engine: Policy can also assert on<br>mTLS cert fields<br>(Subject, Extensions, etc.)
             policy_engine ->> rvps: Query reference values (per rule)
             rvps -->> policy_engine: Reference values
             policy_engine ->> policy_engine: Compare launch params against values
@@ -143,8 +229,21 @@ sequenceDiagram
         end
         note over sams: From LaunchParams,<br> IDBlock Meta,<br> & MAGS Value
         sams ->> sams: Calculate Launch Measurement<br>(sev-snp-measure / create_id_block)
-        sams -->> kata_runtime: ID Block response
-        note over sams, kata_runtime: Response contains:<br>- IDBlock (measurement + guest_svn + metadata)<br>- IDKey (SAMS PubKey)<br>- IDKeyAlgo<br>- IDBlockSig = sign(SAMS PrivKey, IDBlock)
+        sams ->> sams: Sign IDBlock with SAMS PrivKey
+
+        alt /measurement/snp (unauthenticated)
+            sams -->> kata_runtime: ID Block response
+            note over sams, kata_runtime: Response contains:<br>- measurement<br>- id-block (if IDBlock metadata provided)
+        else /measurement/snp/auth (no guest-owner cert)
+            sams ->> sams: Create IdAuth (SAMS-only signing,<br>AuthKey fields zeroed)
+            sams -->> kata_runtime: ID Block + IdAuth response
+            note over sams, kata_runtime: Response contains:<br>- measurement, id-block<br>- id-auth (SAMS-only)<br>- id-key (SAMS PubKey)
+        else /measurement/snp/auth (with guest-owner cert)
+            sams ->> sams: Sign IDKey with guest-owner PrivKey
+            sams ->> sams: Create IdAuth (full signing)
+            sams -->> kata_runtime: ID Block + IdAuth response
+            note over sams, kata_runtime: Response contains:<br>- measurement, id-block<br>- id-auth (full: IDBlockSig + IdKeySig)<br>- id-key (SAMS PubKey)<br>- author-key (Guest Owner PubKey)
+        end
     end
 ```
 
@@ -152,10 +251,12 @@ sequenceDiagram
 
 ##### 3. CVM Launch & Firmware Verification
 
-Kata Runtime adds the Guest Owner's Author Key, encodes the ID Block and
-ID Auth structures, and passes them to the hypervisor. SNP firmware verifies
-the signatures and compares the actual launch measurement against the expected
-value in the ID Block.
+Kata Runtime passes the SAMS-provided id-block and id-auth directly to the
+hypervisor. When SAMS handled guest-owner authentication (via the `/auth`
+endpoint), the id-auth already contains the full IdAuth with AuthKey signing
+performed inside SAMS using the guest owner's private key stored in KBS.
+SNP firmware verifies the signatures and compares the actual launch measurement
+against the expected value in the ID Block.
 
 ```mermaid
 sequenceDiagram
@@ -163,14 +264,12 @@ sequenceDiagram
     participant hv as Hypervisor (QEMU)
     participant kata_runtime as Kata Runtime<br>(on Untrusted Host)
 
-    kata_runtime ->> kata_runtime: Add Author Key metadata
-    note over kata_runtime: AuthKey = <br>sign(Guest Owner PrivKey, IDKey)
-
-    kata_runtime ->> kata_runtime: Encode hypervisor params
-    note over kata_runtime: id-block = base64(IDBlock)<br>id-auth = base64({<br>ID_KEY_ALGO,<br>AUTH_KEY_ALGO, <br>ID_BLOCK_SIG,<br>ID_KEY_DIGEST<br>, ID_KEY_SIG,<br> AUTHOR_KEY}),...
+    kata_runtime ->> kata_runtime: Encode hypervisor params<br>from SAMS response
+    note over kata_runtime: id-block = SAMS-provided id-block<br>id-auth = SAMS-provided id-auth<br>(AuthKey signing done by SAMS)
+    note over kata_runtime: author-key-enabled =<br>1 if SAMS response contained "author-key",<br>0 otherwise
 
     kata_runtime ->> hv: Launch CVM with ID Block
-    note over kata_runtime, hv: -object sev-snp-guest,<br>id-block=...,<br>author-key-enabled=1,<br>id-auth=...,<br>...
+    note over kata_runtime, hv: -object sev-snp-guest,<br>id-block=...,<br>author-key-enabled=0|1,<br>id-auth=...,<br>...
     hv ->> fw: SNP_LAUNCH
 
     critical SNP_LAUNCH_FINISH
@@ -250,13 +349,19 @@ provided initdata and runtimedata match the HOST_DATA and REPORT_DATA fields in 
 The verified claims are then evaluated by the Policy Engine against the EAR appraisal policy.
 Policy provisions can query RVPS for reference values, verify the reported GUEST_SVN against
 the Minimum Acceptable Guest SVN (MAGS) from RVPS, and verify the Trustee endorsement by
-comparing the IDKeyDigest against acceptable SAMS public key hashes from RVPS. Any mismatch
+comparing the IDKeyDigest against acceptable SAMS public key hashes from RVPS. When a
+guest owner registered their signing keypair via SAMS, verifier policies can also look up
+the guest owner's mTLS leaf cert from RVPS using the AuthKeyDigest as the retrieval key,
+and make assertions about the certificate's Subject and Extensions fields. Any mismatch
 adjusts the trust claims at a severity determined by the Verifier Policy Owner. The final
 result is an EAR token encoding the TEE's trustworthiness vector.
 
 > **TODO:** `ear_default_policy_cpu.rego` needs to be updated to set the trustworthiness
 > vector status to "warning" or "contraindicated" when guest svn verification
 > or Trustee endorsement verification fails.
+
+> **TODO:** Consider using IMAGE_ID and FAMILY_ID fields from the attestation report in
+> verification policies, e.g. to identify the kata-runtime version.
 
 ```mermaid
 sequenceDiagram
@@ -315,6 +420,16 @@ sequenceDiagram
             rvps -->> policy_engine: Acceptable public key hashes
             policy_engine ->> policy_engine: Compare IDKeyDigest<br>against acceptable hashes
             break No IDKeyDigest match
+                policy_engine ->> policy_engine: Adjust trust claims
+                note over policy_engine: Severity determined by<br>Verifier Policy Owner
+            end
+        end
+
+        opt Verify Guest Owner identity (AuthKeyDigest)
+            policy_engine ->> rvps: Retrieve guest-owner mTLS leaf cert<br>(keyed by AuthKeyDigest)
+            rvps -->> policy_engine: Guest-owner mTLS certificate
+            policy_engine ->> policy_engine: Assert against cert fields<br>(Subject, Extensions, etc.)
+            break Guest-owner cert assertion fails
                 policy_engine ->> policy_engine: Adjust trust claims
                 note over policy_engine: Severity determined by<br>Verifier Policy Owner
             end
@@ -432,3 +547,9 @@ curl -X POST \
 
 # Expected response: '{"gsvn": 0}'
 ```
+
+Design Documents
+---
+- [Demystifying the Measurement Endpoints](demystifying-the-measurement-endpoints.md) — detailed request/response schemas for `/measurement/snp` and `/measurement/snp/auth`
+- [Addendum on Dynamic Auth Keys](addendum-on-dynamic-auth-keys.md) — guest-owner registration, mTLS authentication, and dynamic AuthKey signing design
+- [Improvements & Open Questions](IMPROVEMENTS.md) — tracked improvements and open design questions
