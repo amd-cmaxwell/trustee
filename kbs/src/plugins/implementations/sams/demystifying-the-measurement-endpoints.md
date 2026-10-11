@@ -12,6 +12,9 @@ None
     initrd_hash_str: "<Precalculated Cryptographic Hash of the initial filesystem the CVM will use>"
     kernel_hash_str: "<Precalculated Cryptographic Hash of the kernel file the CVM will use>",
     append: "<Kernel Cmdline Arguments...>",
+    guest_policy: <Guest Policy Bitflag as a u32>,
+    family_id: "<String Identifying which group to which the ID Block belongs (16 bytes max)",
+    image_id: "<String Identifying which CVM the ID Block belongs (16 bytes max)",
 }
 ```
 
@@ -61,6 +64,9 @@ the response body contains:
     initrd_hash_str: "<Precalculated Cryptographic Hash of the initial filesystem the CVM will use>"
     kernel_hash_str: "<Precalculated Cryptographic Hash of the kernel file the CVM will use>",
     append: "<Kernel Cmdline Arguments...>",
+    guest_policy: <Guest Policy Bitflag as a u32>,
+    family_id: "<String Identifying which group to which the ID Block belongs (16 bytes max)",
+    image_id: "<String Identifying which CVM the ID Block belongs (16 bytes max)",
 }
 ```
 
