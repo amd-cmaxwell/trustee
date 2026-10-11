@@ -19,11 +19,11 @@ use serde::Deserialize;
 use sev::measurement::idblock::load_priv_key;
 
 use super::super::plugin_manager::{AuthMode, ClientPlugin};
+use super::resource::RESOURCE_STORAGE_NAMESPACE;
 
 mod api;
 use api::RequestHandler;
 mod backend;
-
 use backend::guest_owner::GuestOwnerHandler;
 
 #[derive(Deserialize, Clone, Debug, PartialEq)]
@@ -40,6 +40,7 @@ pub struct Sams {
     rvps_address: Option<String>,
     policy_engine: PolicyEngine<Regorus>,
     storage: Arc<dyn KeyValueStorage>,
+    secret_storage: Arc<dyn KeyValueStorage>,
 }
 
 impl Sams {
@@ -48,6 +49,9 @@ impl Sams {
         storage_provider: Arc<dyn StorageProvider>,
     ) -> Result<Self> {
         let storage = storage_provider.get_or_register("sams").await?;
+        let secret_storage = storage_provider
+            .get_or_register(RESOURCE_STORAGE_NAMESPACE)
+            .await?;
         let policy_engine = PolicyEngine::<Regorus>::new(storage.clone());
         let id_key = load_priv_key(config.id_key_file)?;
         Ok(Self {
@@ -56,6 +60,7 @@ impl Sams {
             rvps_address: config.rvps_address,
             policy_engine,
             storage,
+            secret_storage,
         })
     }
 }
@@ -85,6 +90,7 @@ impl Sams {
             self.rvps_address.clone(),
             self.policy_engine.clone(),
             self.storage.clone(),
+            self.secret_storage.clone(),
         )?;
         handler.handle(body, headers).await
     }
@@ -143,11 +149,19 @@ impl ClientPlugin for Sams {
                 self.dispatch("measurement", tee, true, body, headers).await
             }
             ("POST", ["guest-owner"]) => {
-                let handler = GuestOwnerHandler::new(self.storage.clone());
+                let handler = GuestOwnerHandler::new(
+                    self.storage.clone(),
+                    self.secret_storage.clone(),
+                    self.rvps_address.clone(),
+                );
                 handler.register(headers, body).await
             }
             ("DELETE", ["guest-owner"]) => {
-                let handler = GuestOwnerHandler::new(self.storage.clone());
+                let handler = GuestOwnerHandler::new(
+                    self.storage.clone(),
+                    self.secret_storage.clone(),
+                    self.rvps_address.clone(),
+                );
                 handler.revoke(headers).await
             }
             _ => self.handle(body, query, path, method, init_data).await,
