@@ -4,11 +4,18 @@
 
 use std::{collections::HashMap, fmt::Display, sync::Arc};
 
+use actix_web::http::header::HeaderMap;
 use actix_web::http::Method;
 use anyhow::{Context, Result};
 use key_value_storage::StorageProvider;
 use serde::Deserialize;
 use serde_json::Value;
+
+pub enum AuthMode {
+    Admin,
+    Attestation,
+    Plugin,
+}
 
 use super::{sample, RepositoryConfig, ResourceStorage};
 
@@ -55,6 +62,36 @@ pub trait ClientPlugin: Send + Sync {
         path: &[&str],
         method: &Method,
     ) -> Result<bool>;
+
+    /// Determine the authentication mode for this request.
+    /// Default delegates to `validate_auth` for backward compatibility.
+    async fn auth_mode(
+        &self,
+        body: &[u8],
+        query: &HashMap<String, String>,
+        path: &[&str],
+        method: &Method,
+    ) -> Result<AuthMode> {
+        if self.validate_auth(body, query, path, method).await? {
+            Ok(AuthMode::Admin)
+        } else {
+            Ok(AuthMode::Attestation)
+        }
+    }
+
+    /// Handle a request with access to HTTP headers.
+    /// Default ignores headers and delegates to `handle`.
+    async fn handle_with_headers(
+        &self,
+        body: &[u8],
+        query: &HashMap<String, String>,
+        path: &[&str],
+        method: &Method,
+        _headers: &HeaderMap,
+        init_data: Option<&Value>,
+    ) -> Result<Vec<u8>> {
+        self.handle(body, query, path, method, init_data).await
+    }
 
     /// Whether the body needs to be encrypted via TEE key pair.
     /// If returns `Ok(true)`, the KBS server will encrypt the whole body
