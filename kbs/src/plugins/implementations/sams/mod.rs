@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use actix_web::http::header::HeaderMap;
 use actix_web::http::Method;
 use anyhow::{bail, Result};
 use kbs_types::Tee;
@@ -17,11 +18,13 @@ use policy_engine::PolicyEngine;
 use serde::Deserialize;
 use sev::measurement::idblock::load_priv_key;
 
-use super::super::plugin_manager::ClientPlugin;
+use super::super::plugin_manager::{AuthMode, ClientPlugin};
 
 mod api;
 use api::RequestHandler;
 mod backend;
+
+use backend::guest_owner::GuestOwnerHandler;
 
 #[derive(Deserialize, Clone, Debug, PartialEq)]
 pub struct SamsConfig {
@@ -111,16 +114,52 @@ impl ClientPlugin for Sams {
         }
     }
 
+    async fn handle_with_headers(
+        &self,
+        body: &[u8],
+        query: &HashMap<String, String>,
+        path: &[&str],
+        method: &Method,
+        headers: &HeaderMap,
+        init_data: Option<&serde_json::Value>,
+    ) -> Result<Vec<u8>> {
+        match (method.as_str(), path) {
+            ("POST", ["guest-owner"]) => {
+                let handler = GuestOwnerHandler::new(self.storage.clone());
+                handler.register(headers, body).await
+            }
+            ("DELETE", ["guest-owner"]) => {
+                let handler = GuestOwnerHandler::new(self.storage.clone());
+                handler.revoke(headers).await
+            }
+            _ => self.handle(body, query, path, method, init_data).await,
+        }
+    }
+
     async fn validate_auth(
         &self,
         _body: &[u8],
         _query: &HashMap<String, String>,
         path: &[&str],
-        method: &Method,
+        _method: &Method,
     ) -> Result<bool> {
-        match (method.as_str(), path) {
-            ("POST", ["measurement", ..]) => Ok(false),
+        match path {
+            ["measurement", ..] => Ok(false),
             _ => Ok(true),
+        }
+    }
+
+    async fn auth_mode(
+        &self,
+        _body: &[u8],
+        _query: &HashMap<String, String>,
+        path: &[&str],
+        _method: &Method,
+    ) -> Result<AuthMode> {
+        match path {
+            ["guest-owner"] => Ok(AuthMode::Plugin),
+            ["measurement", ..] => Ok(AuthMode::Attestation),
+            _ => Ok(AuthMode::Admin),
         }
     }
 
