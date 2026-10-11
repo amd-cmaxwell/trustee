@@ -2,11 +2,13 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
+use actix_web::http::header::HeaderMap;
 use anyhow::{anyhow, bail, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use key_value_storage::KeyValueStorage;
 use openssl::ec::EcKey;
 use openssl::pkey::Private;
+use openssl::sha::sha256;
 use policy_engine::policy::rego::Regorus;
 use policy_engine::PolicyEngine;
 use serde::{Deserialize, Serialize};
@@ -56,6 +58,8 @@ pub struct SnpMeasurementResponse {
     pub id_auth: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "id-key")]
     pub id_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "author-key")]
+    pub author_key: Option<String>,
 }
 
 fn parse_id_bytes(hex_str: &str) -> Result<[u8; 16]> {
@@ -73,6 +77,23 @@ async fn read_mags(storage: &dyn KeyValueStorage) -> Result<u32> {
         }
         None => Ok(0),
     }
+}
+
+fn extract_bearer_token(headers: &HeaderMap) -> Option<String> {
+    let auth_value = headers.get("authorization")?.to_str().ok()?;
+    let token = auth_value.strip_prefix("Bearer ")?;
+    Some(token.to_string())
+}
+
+fn hash_key(data: &str) -> String {
+    hex::encode(sha256(data.as_bytes()))
+}
+
+#[derive(Deserialize)]
+struct StoredKeypair {
+    #[allow(dead_code)]
+    pubkey: String,
+    privkey: String,
 }
 
 pub struct MeasurementHandler {
@@ -103,7 +124,7 @@ impl MeasurementHandler {
 
 #[async_trait::async_trait]
 impl RequestHandler for MeasurementHandler {
-    async fn handle(&mut self, body: &[u8]) -> Result<Vec<u8>> {
+    async fn handle(&mut self, body: &[u8], headers: &HeaderMap) -> Result<Vec<u8>> {
         let req: SnpMeasurementRequest = serde_json::from_slice(body)?;
 
         if self.is_auth
@@ -112,9 +133,20 @@ impl RequestHandler for MeasurementHandler {
             bail!("auth endpoint requires family_id, image_id, and guest_policy");
         }
 
+        let guest_owner_cert = if self.is_auth {
+            extract_bearer_token(headers)
+        } else {
+            None
+        };
+
         if self.is_auth {
             if let Ok(policy) = self.policy_engine.get_policy(LAUNCH_POLICY_ID).await {
-                let input = serde_json::to_string(&req)?;
+                let mut input_value = serde_json::to_value(&req)?;
+                if let Some(cert) = &guest_owner_cert {
+                    input_value["guest_owner_cert"] = serde_json::Value::String(cert.clone());
+                }
+                let input = serde_json::to_string(&input_value)?;
+
                 let result = self
                     .policy_engine
                     .engine
@@ -171,6 +203,7 @@ impl RequestHandler for MeasurementHandler {
         let mut id_block_b64 = None;
         let mut id_auth_b64 = None;
         let mut id_key_b64 = None;
+        let mut author_key_b64 = None;
 
         if let (Some(fam), Some(img)) = (&req.family_id, &req.image_id) {
             let family_id = FamilyId::new(parse_id_bytes(fam)?);
@@ -192,9 +225,34 @@ impl RequestHandler for MeasurementHandler {
             id_block_b64 = Some(STANDARD.encode(block_bytes.as_ref()));
 
             if self.is_auth {
-                let id_auth = IdAuth::default()
+                let mut id_auth = IdAuth::default()
                     .sign_id_block(DEFAULT_KEY_ALGO, self.id_key.clone(), &block)
                     .map_err(|e| anyhow!("failed to sign IdBlock: {e}"))?;
+
+                if let Some(cert) = &guest_owner_cert {
+                    let cert_hash = hash_key(cert);
+                    if let Some(keypair_bytes) = self.storage.get(&cert_hash).await? {
+                        let keypair: StoredKeypair = serde_json::from_slice(&keypair_bytes)?;
+                        let guest_owner_priv_key =
+                            EcKey::private_key_from_pem(keypair.privkey.as_bytes())
+                                .map_err(|e| anyhow!("invalid guest-owner private key: {e}"))?;
+
+                        id_auth = id_auth
+                            .sign_id_key(DEFAULT_KEY_ALGO, guest_owner_priv_key.clone())
+                            .map_err(|e| {
+                                anyhow!("failed to sign IDKey with guest-owner key: {e}")
+                            })?;
+
+                        let guest_owner_pub_key =
+                            SevEcdsaPubKey::try_from(&guest_owner_priv_key).map_err(|e| {
+                                anyhow!("failed to extract guest-owner public key: {e}")
+                            })?;
+                        let guest_owner_pub_key_bytes = guest_owner_pub_key.to_bytes().map_err(|e| {
+                            anyhow!("failed to serialize guest-owner public key: {e}")
+                        })?;
+                        author_key_b64 = Some(STANDARD.encode(guest_owner_pub_key_bytes.as_ref()));
+                    }
+                }
 
                 let auth_bytes = id_auth
                     .to_bytes()
@@ -215,6 +273,7 @@ impl RequestHandler for MeasurementHandler {
             id_block: id_block_b64,
             id_auth: id_auth_b64,
             id_key: id_key_b64,
+            author_key: author_key_b64,
         };
         Ok(serde_json::to_vec(&resp)?)
     }

@@ -58,7 +58,11 @@ async fn write_mags(storage: &dyn KeyValueStorage, value: u32) -> Result<()> {
 
 #[async_trait::async_trait]
 impl RequestHandler for LaunchPolicyHandler {
-    async fn handle(&mut self, body: &[u8]) -> Result<Vec<u8>> {
+    async fn handle(
+        &mut self,
+        body: &[u8],
+        _headers: &actix_web::http::header::HeaderMap,
+    ) -> Result<Vec<u8>> {
         let req: LaunchPolicyRequest = serde_json::from_slice(body)?;
 
         let rego = String::from_utf8(
