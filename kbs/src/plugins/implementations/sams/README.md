@@ -12,7 +12,7 @@ Why?
 
 API
 ---
-### POST /measurement
+### POST /measurement/< tee >/
 #### Requires Admin?
 - No
 #### Request Params:
@@ -117,7 +117,7 @@ sequenceDiagram
     alt requirePreVerification is NOT true
         note left of kata_runtime: Fallback: launch CVM<br>without ID Block<br>(current flow)
     else requirePreVerification is true
-        kata_runtime ->> api: POST /measurement
+        kata_runtime ->> api: POST /measurement/snp
         api ->> sams: Forward request
 
         note over kata_runtime, sams: LaunchParams = {vcpus, ovmf_hash,<br>kernel_hash, initrd_hash, ...}
@@ -126,7 +126,7 @@ sequenceDiagram
         opt Pre-Verification against RVPS
             sams ->> policy_engine: Register query_reference_value extension
             sams ->> policy_engine: Evaluate Launch policy
-            note over sams, policy_engine: input = LaunchParams<br>rules = [data.policy.acceptable,<br>data.policy.extensions]
+            note over sams, policy_engine: input = LaunchParams<br>rules = [data.policy.authorized,<br>data.policy.extensions]
             policy_engine ->> rvps: Query reference values (per rule)
             rvps -->> policy_engine: Reference values
             policy_engine ->> policy_engine: Compare launch params against values
@@ -173,7 +173,7 @@ sequenceDiagram
     note over kata_runtime, hv: -object sev-snp-guest,<br>id-block=...,<br>author-key-enabled=1,<br>id-auth=...,<br>...
     hv ->> fw: SNP_LAUNCH
 
-    critical SNP_LAUNCH_FINALIZE
+    critical SNP_LAUNCH_FINISH
         fw ->> fw: Verify signature fields
         fw ->> fw: Calculate actual launch measurement
         fw ->> fw: Compare actual vs expected measurement
@@ -419,7 +419,7 @@ sequenceDiagram
 encoded_policy=$(base64 <<EOF
 package policy
 import rego.v1
-default acceptable := true
+default authorized := true
 EOF)
 payload="$(jq --args policy "$encoded_policy" '{"policy": $policy}')"
 
