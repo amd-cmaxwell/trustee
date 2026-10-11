@@ -10,9 +10,12 @@ use actix_web::http::Method;
 use anyhow::{bail, Result};
 use kbs_types::Tee;
 use key_value_storage::{KeyValueStorage, StorageProvider};
+use openssl::ec::EcKey;
+use openssl::pkey::Private;
 use policy_engine::policy::rego::Regorus;
 use policy_engine::PolicyEngine;
 use serde::Deserialize;
+use sev::measurement::idblock::load_priv_key;
 
 use super::super::plugin_manager::ClientPlugin;
 
@@ -23,10 +26,12 @@ mod backend;
 #[derive(Deserialize, Clone, Debug, PartialEq)]
 pub struct SamsConfig {
     pub ovmf_file: PathBuf,
+    pub id_key_file: PathBuf,
 }
 
 pub struct Sams {
     ovmf_file: PathBuf,
+    id_key: EcKey<Private>,
     policy_engine: PolicyEngine<Regorus>,
     storage: Arc<dyn KeyValueStorage>,
 }
@@ -38,8 +43,10 @@ impl Sams {
     ) -> Result<Self> {
         let storage = storage_provider.get_or_register("sams").await?;
         let policy_engine = PolicyEngine::<Regorus>::new(storage.clone());
+        let id_key = load_priv_key(config.id_key_file)?;
         Ok(Self {
             ovmf_file: config.ovmf_file,
+            id_key,
             policy_engine,
             storage,
         })
@@ -54,11 +61,19 @@ fn tee_from_path(tee_str: &str) -> Result<Tee> {
 }
 
 impl Sams {
-    async fn dispatch(&self, endpoint: &str, tee: Tee, body: &[u8]) -> Result<Vec<u8>> {
+    async fn dispatch(
+        &self,
+        endpoint: &str,
+        tee: Tee,
+        is_auth: bool,
+        body: &[u8],
+    ) -> Result<Vec<u8>> {
         let mut handler = api::get_request_handler(
             endpoint,
             tee,
             &self.ovmf_file,
+            self.id_key.clone(),
+            is_auth,
             self.policy_engine.clone(),
             self.storage.clone(),
         )?;
@@ -77,9 +92,13 @@ impl ClientPlugin for Sams {
         _init_data: Option<&serde_json::Value>,
     ) -> Result<Vec<u8>> {
         match (method.as_str(), path) {
-            ("POST", ["measurement", tee_str, ..]) => {
+            ("POST", ["measurement", tee_str]) => {
                 let tee = tee_from_path(tee_str)?;
-                self.dispatch("measurement", tee, body).await
+                self.dispatch("measurement", tee, false, body).await
+            }
+            ("POST", ["measurement", tee_str, "auth"]) => {
+                let tee = tee_from_path(tee_str)?;
+                self.dispatch("measurement", tee, true, body).await
             }
             ("POST", ["launch-policy", ..]) => {
                 let mut handler = api::get_launch_policy_handler(

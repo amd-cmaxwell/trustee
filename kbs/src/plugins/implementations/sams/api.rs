@@ -4,6 +4,8 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use kbs_types::Tee;
 use key_value_storage::KeyValueStorage;
+use openssl::ec::EcKey;
+use openssl::pkey::Private;
 use policy_engine::policy::rego::Regorus;
 use policy_engine::PolicyEngine;
 
@@ -28,16 +30,21 @@ impl RequestHandler for MeasurementHandler {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn get_request_handler(
     req_type: &str,
     tee: Tee,
     ovmf_file: &Path,
+    id_key: EcKey<Private>,
+    is_auth: bool,
     policy_engine: PolicyEngine<Regorus>,
     storage: Arc<dyn KeyValueStorage>,
 ) -> Result<MeasurementHandler> {
     match (req_type, tee) {
         ("measurement", Tee::Snp) => Ok(MeasurementHandler::Snp(SnpMeasurementHandler::new(
             ovmf_file.to_path_buf(),
+            id_key,
+            is_auth,
             policy_engine,
             storage,
         ))),
