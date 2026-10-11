@@ -41,6 +41,7 @@ pub fn get_request_handler(
     rvps_address: Option<String>,
     policy_engine: PolicyEngine<Regorus>,
     storage: Arc<dyn KeyValueStorage>,
+    secret_storage: Arc<dyn KeyValueStorage>,
 ) -> Result<MeasurementHandler> {
     match (req_type, tee) {
         ("measurement", Tee::Snp) => Ok(MeasurementHandler::Snp(SnpMeasurementHandler::new(
@@ -50,6 +51,7 @@ pub fn get_request_handler(
             rvps_address,
             policy_engine,
             storage,
+            secret_storage,
         ))),
         ("measurement", other) => Err(anyhow!("unsupported TEE type for measurement: {other:?}")),
         _ => Err(anyhow!("unsupported request type: {req_type}")),

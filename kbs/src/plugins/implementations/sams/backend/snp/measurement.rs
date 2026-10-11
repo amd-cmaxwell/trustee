@@ -106,6 +106,7 @@ pub struct MeasurementHandler {
     rvps_address: Option<String>,
     policy_engine: PolicyEngine<Regorus>,
     storage: Arc<dyn KeyValueStorage>,
+    secret_storage: Arc<dyn KeyValueStorage>,
 }
 
 impl MeasurementHandler {
@@ -116,6 +117,7 @@ impl MeasurementHandler {
         rvps_address: Option<String>,
         policy_engine: PolicyEngine<Regorus>,
         storage: Arc<dyn KeyValueStorage>,
+        secret_storage: Arc<dyn KeyValueStorage>,
     ) -> Self {
         Self {
             ovmf_file,
@@ -124,6 +126,7 @@ impl MeasurementHandler {
             rvps_address,
             policy_engine,
             storage,
+            secret_storage,
         }
     }
 }
@@ -273,9 +276,12 @@ impl RequestHandler for MeasurementHandler {
 
                 if let Some(cert) = &guest_owner_cert {
                     let cert_hash = hash_key(cert);
-                    let keypair_bytes = self.storage.get(&cert_hash).await?.ok_or_else(|| {
-                        PluginHttpError::unauthorized("guest-owner certificate is unknown to SAMS")
-                    })?;
+                    let keypair_bytes =
+                        self.secret_storage.get(&cert_hash).await?.ok_or_else(|| {
+                            PluginHttpError::unauthorized(
+                                "guest-owner certificate is unknown to SAMS",
+                            )
+                        })?;
 
                     let keypair: StoredKeypair = serde_json::from_slice(&keypair_bytes)?;
                     let guest_owner_priv_key =
