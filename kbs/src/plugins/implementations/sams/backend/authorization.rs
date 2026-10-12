@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use super::super::api::RequestHandler;
 
-const LAUNCH_POLICY_ID: &str = "launch-policy";
-const MAGS_KEY: &str = "mags";
+pub const AUTH_POLICY_ID: &str = "auth-policy";
+pub const MAGS_KEY: &str = "mags";
 
 #[derive(Deserialize)]
 pub struct AuthorizationPolicyRequest {
@@ -73,7 +73,7 @@ impl RequestHandler for AuthorizationPolicyHandler {
         .map_err(|e| anyhow!("policy is not valid UTF-8: {e}"))?;
 
         self.policy_engine
-            .set_policy(LAUNCH_POLICY_ID, &rego, true)
+            .set_policy(AUTH_POLICY_ID, &rego, true)
             .await?;
 
         if req.incr_gsvn {

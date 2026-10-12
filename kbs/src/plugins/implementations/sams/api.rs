@@ -58,7 +58,7 @@ pub fn get_request_handler(
     }
 }
 
-pub fn get_launch_policy_handler(
+pub fn get_auth_policy_handler(
     policy_engine: PolicyEngine<Regorus>,
     storage: Arc<dyn KeyValueStorage>,
 ) -> AuthorizationPolicyHandler {
