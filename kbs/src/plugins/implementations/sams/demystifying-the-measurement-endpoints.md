@@ -51,7 +51,7 @@ the response body contains:
             `400 - Bad Request`
 # POST /kbs/v0/sams/measurement/snp/auth
 ## Headers
-`Authorization: Bearer <base64-encoded JWT containing the field "guest-owner-cert": "<mTLS Certificate>">`
+`Authorization: Bearer <JWT containing the field "certificate": "<guest-owner client certificate (PEM)>">`
 
 ## Request Body
 ```json
@@ -73,7 +73,7 @@ the response body contains:
 ## Responses
 
 1. If you send Launch Parameters & IDBlock Metadata 
-**AND** SAMS Policy Approves of your submitted launch params & ID Block Metadata, then
+**AND** the authorization policy approves of your submitted launch params & ID Block Metadata, then
 the response body contains:
     - Success Codes
         `200 - OK`
@@ -103,11 +103,11 @@ the response body contains:
             `400 - Bad Request`
         2. If you fail to provide the IDBlock Metadata fields (`FAMILY_ID` & `IMAGE_ID`):
             `400 - Bad Request`
-        3. If CVM Launch is Forbidden by SAMS Policy:
+        3. If CVM Launch is Forbidden by the authorization policy:
             `403 - Forbidden` 
-2. **If ON TOP OF THAT, YOU SEND A Bearer Token containing an mTLS certificate for a *REGISTERED* guest-owner,** 
-***AND* SAMS Policy Approves of your launch params, ID Block Metadata, & mTLS certificate,** then
-the response body contains:
+2. **If ON TOP OF THAT, YOU SEND A Bearer Token containing a client certificate for a *REGISTERED* guest-owner (one who has uploaded a signing-policy via `POST /signing/policy`),** 
+***AND* the authorization policy approves of your launch params, ID Block Metadata, & client certificate,** then
+SAMS evaluates the guest-owner's **signing-policy** with the launch params as input. The policy selects which signing keypair to use by outputting `data.policy.pubkey` and `data.policy.privkey`. The response body contains:
     - Success Codes
         `200 - OK`
         ```json
@@ -124,14 +124,15 @@ the response body contains:
                 IdBlockSig = IdBlockAlgo(SAMS Priv Key, IDBlock), 
                 IdBlockAlgo = <integer rep of Ecdsa-384>,
                 IdKeyDigest = SHA-384(SAMS Pub Key),
-                IdKeySig = AuthKeyAlgo(Guest Owner Priv Key, SAMS Pub Key),
+                IdKeySig = AuthKeyAlgo(Policy-Selected Guest Owner Priv Key, SAMS Pub Key),
                 AuthKeyAlgo = <integer rep of Ecdsa-384>,
-                AuthKeyDigest = SHA-384(Guest Owner Pub Key)
+                AuthKeyDigest = SHA-384(Policy-Selected Guest Owner Pub Key)
             })",
             "id-key": "<SAMS Public Key>",
-            "author-key": "<Guest Owner Public Key>"
+            "author-key": "<Guest Owner Public Key (selected by signing-policy)>"
         }
         ```
+    Additionally, SAMS registers the guest-owner's mTLS certificate in RVPS under the `"guest-owner-certs"` reference value, keyed by the AuthKeyDigest of the policy-selected key.
     - Error Codes:
         1. If you fail to provide the minimum set of Launch Params to calculate a measurement:
             `400 - Bad Request`
@@ -141,11 +142,11 @@ the response body contains:
             `401 - Unauthorized`
         5. If your Bearer Token is expired:
             `401 - Unauthorized`
-        4. If your Bearer Token doesn't contain a valid TLS Certificate:
+        4. If your Bearer Token doesn't contain a valid client certificate:
             `401 - Unauthorized`
-        4. If the mTLS certificate in your Bearer Token is unknown to SAMS:
+        4. If no signing-policy is registered for the client certificate in your Bearer Token:
             `401 - Unauthorized`
-        6. If SAMS Policy rejects your Launch Params, ID Block Metadata, &/or mTLS Cert:
+        5. If the signing-policy does not produce valid keys for these launch params:
             `403 - Forbidden`
-
-
+        6. If the authorization policy rejects your Launch Params, ID Block Metadata, &/or client cert:
+            `403 - Forbidden`

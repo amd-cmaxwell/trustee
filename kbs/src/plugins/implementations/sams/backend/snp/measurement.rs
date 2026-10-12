@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -10,12 +11,12 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use key_value_storage::KeyValueStorage;
 use openssl::ec::EcKey;
 use openssl::pkey::Private;
-use openssl::sha::sha384;
 use policy_engine::policy::rego::Regorus;
 use policy_engine::policy::rego::RegorusExtension;
 use policy_engine::PolicyEngine;
 use serde::{Deserialize, Serialize};
 use sev::firmware::guest::GuestPolicy;
+use sev::measurement::idblock::get_key_digest;
 use sev::measurement::idblock_types::{
     FamilyId, IdAuth, IdBlock, ImageId, SevEcdsaPubKey, DEFAULT_KEY_ALGO,
 };
@@ -25,10 +26,14 @@ use sev::measurement::vmsa::{GuestFeatures, VMMType};
 use sev::parser::ByteParser;
 
 use super::super::super::api::RequestHandler;
+use super::super::signing::{hash_cert, signing_policy_id};
 
-const LAUNCH_POLICY_ID: &str = "launch-policy";
+const AUTH_POLICY_ID: &str = "auth-policy";
 const MAGS_KEY: &str = "mags";
-const POLICY_RULE: &str = "data.policy.authorized";
+const AUTH_POLICY_RULE: &str = "data.policy.authorized";
+const SIGNING_POLICY_PUBKEY_RULE: &str = "data.policy.pubkey";
+const SIGNING_POLICY_PRIVKEY_RULE: &str = "data.policy.privkey";
+const RVPS_GUEST_OWNER_CERTS_KEY: &str = "guest-owner-certs";
 
 #[derive(Deserialize, Serialize)]
 pub struct SnpMeasurementRequest {
@@ -82,21 +87,61 @@ async fn read_mags(storage: &dyn KeyValueStorage) -> Result<u32> {
     }
 }
 
-fn extract_bearer_token(headers: &HeaderMap) -> Option<String> {
-    let auth_value = headers.get("authorization")?.to_str().ok()?;
-    let token = auth_value.strip_prefix("Bearer ")?;
-    Some(token.to_string())
-}
-
-fn hash_key(data: &str) -> String {
-    hex::encode(sha384(data.as_bytes()))
-}
-
 #[derive(Deserialize)]
-struct StoredKeypair {
-    #[allow(dead_code)]
-    pubkey: String,
-    privkey: String,
+struct GuestOwnerJwtClaims {
+    certificate: String,
+}
+
+fn extract_guest_owner_cert(headers: &HeaderMap) -> Option<String> {
+    let auth_value = headers.get("authorization")?.to_str().ok()?;
+    let jwt = auth_value.strip_prefix("Bearer ")?;
+    let parts: Vec<&str> = jwt.split('.').collect();
+    let payload_b64 = parts.get(1)?;
+    let payload_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload_b64)
+        .ok()?;
+    let claims: GuestOwnerJwtClaims = serde_json::from_slice(&payload_bytes).ok()?;
+    Some(claims.certificate)
+}
+
+fn compute_auth_key_digest(privkey_pem: &str) -> Result<String> {
+    let ec_key = EcKey::private_key_from_pem(privkey_pem.as_bytes())
+        .map_err(|e| anyhow!("invalid guest-owner private key: {e}"))?;
+    let sev_pub_key = SevEcdsaPubKey::try_from(&ec_key)
+        .map_err(|e| anyhow!("failed to convert to SevEcdsaPubKey: {e}"))?;
+    let digest =
+        get_key_digest(sev_pub_key).map_err(|e| anyhow!("failed to compute AuthKeyDigest: {e}"))?;
+    let digest_bytes = digest
+        .to_bytes()
+        .map_err(|e| anyhow!("failed to serialize AuthKeyDigest: {e}"))?;
+    Ok(hex::encode(digest_bytes))
+}
+
+pub fn build_rvps_message(certs_map: &HashMap<String, String>) -> Result<String> {
+    let payload = serde_json::json!({ RVPS_GUEST_OWNER_CERTS_KEY: certs_map });
+    let payload_b64 = STANDARD.encode(serde_json::to_vec(&payload)?);
+    let message = serde_json::json!({
+        "version": "0.1.0",
+        "payload": payload_b64,
+        "type": "sample"
+    });
+    Ok(serde_json::to_string(&message)?)
+}
+
+pub async fn read_rvps_certs_map(addr: &str) -> Result<HashMap<String, String>> {
+    let result = reference_value_provider_service::client::query(
+        addr.to_string(),
+        RVPS_GUEST_OWNER_CERTS_KEY.to_string(),
+    )
+    .await?;
+
+    match result {
+        Some(json_str) => {
+            let map: HashMap<String, String> = serde_json::from_str(&json_str)?;
+            Ok(map)
+        }
+        None => Ok(HashMap::new()),
+    }
 }
 
 pub struct MeasurementHandler {
@@ -104,9 +149,9 @@ pub struct MeasurementHandler {
     id_key: EcKey<Private>,
     is_auth: bool,
     rvps_address: Option<String>,
-    policy_engine: PolicyEngine<Regorus>,
+    auth_policy_engine: PolicyEngine<Regorus>,
+    signing_policy_engine: PolicyEngine<Regorus>,
     storage: Arc<dyn KeyValueStorage>,
-    secret_storage: Arc<dyn KeyValueStorage>,
 }
 
 impl MeasurementHandler {
@@ -115,20 +160,74 @@ impl MeasurementHandler {
         id_key: EcKey<Private>,
         is_auth: bool,
         rvps_address: Option<String>,
-        policy_engine: PolicyEngine<Regorus>,
+        auth_policy_engine: PolicyEngine<Regorus>,
+        signing_policy_engine: PolicyEngine<Regorus>,
         storage: Arc<dyn KeyValueStorage>,
-        secret_storage: Arc<dyn KeyValueStorage>,
     ) -> Self {
         Self {
             ovmf_file,
             id_key,
             is_auth,
             rvps_address,
-            policy_engine,
+            auth_policy_engine,
+            signing_policy_engine,
             storage,
-            secret_storage,
         }
     }
+}
+
+struct SigningKeys {
+    privkey: EcKey<Private>,
+    privkey_pem: String,
+}
+
+async fn evaluate_signing_policy(
+    signing_policy_engine: &PolicyEngine<Regorus>,
+    cert_hash: &str,
+    input: &str,
+) -> Result<SigningKeys> {
+    let policy_id = signing_policy_id(cert_hash);
+    let policy = signing_policy_engine
+        .get_policy(&policy_id)
+        .await
+        .map_err(|_| {
+            PluginHttpError::unauthorized("guest-owner signing policy not found in SAMS")
+        })?;
+
+    let result = signing_policy_engine
+        .engine
+        .evaluate(
+            None,
+            input.to_string(),
+            policy,
+            vec![
+                SIGNING_POLICY_PUBKEY_RULE.to_string(),
+                SIGNING_POLICY_PRIVKEY_RULE.to_string(),
+            ],
+            vec![],
+        )
+        .await
+        .map_err(|e| anyhow!("signing policy evaluation failed: {e}"))?;
+
+    let privkey_pem = result
+        .eval_rules_result
+        .get(SIGNING_POLICY_PRIVKEY_RULE)
+        .and_then(|v| v.as_ref())
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            PluginHttpError::forbidden(
+                "signing policy did not produce a valid privkey for these launch params",
+            )
+        })?
+        .to_string();
+
+    let privkey = EcKey::private_key_from_pem(privkey_pem.as_bytes())
+        .map_err(|e| anyhow!("signing policy produced an invalid private key PEM: {e}"))?;
+
+    Ok(SigningKeys {
+        privkey,
+        privkey_pem,
+    })
 }
 
 #[async_trait::async_trait]
@@ -145,13 +244,13 @@ impl RequestHandler for MeasurementHandler {
         }
 
         let guest_owner_cert = if self.is_auth {
-            extract_bearer_token(headers)
+            extract_guest_owner_cert(headers)
         } else {
             None
         };
 
         if self.is_auth {
-            if let Ok(policy) = self.policy_engine.get_policy(LAUNCH_POLICY_ID).await {
+            if let Ok(policy) = self.auth_policy_engine.get_policy(AUTH_POLICY_ID).await {
                 let mut input_value = serde_json::to_value(&req)?;
                 if let Some(cert) = &guest_owner_cert {
                     input_value["guest_owner_cert"] = serde_json::Value::String(cert.clone());
@@ -185,20 +284,20 @@ impl RequestHandler for MeasurementHandler {
                 }
 
                 let result = self
-                    .policy_engine
+                    .auth_policy_engine
                     .engine
                     .evaluate(
                         None,
                         input,
                         policy,
-                        vec![POLICY_RULE.to_string()],
+                        vec![AUTH_POLICY_RULE.to_string()],
                         extensions,
                     )
                     .await?;
 
                 let authorized = result
                     .eval_rules_result
-                    .get(POLICY_RULE)
+                    .get(AUTH_POLICY_RULE)
                     .and_then(|v| v.as_ref())
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
@@ -275,29 +374,32 @@ impl RequestHandler for MeasurementHandler {
                     .map_err(|e| anyhow!("failed to sign IdBlock: {e}"))?;
 
                 if let Some(cert) = &guest_owner_cert {
-                    let cert_hash = hash_key(cert);
-                    let keypair_bytes =
-                        self.secret_storage.get(&cert_hash).await?.ok_or_else(|| {
-                            PluginHttpError::unauthorized(
-                                "guest-owner certificate is unknown to SAMS",
-                            )
-                        })?;
+                    let cert_hash = hash_cert(cert);
+                    let input = serde_json::to_string(&serde_json::to_value(&req)?)?;
 
-                    let keypair: StoredKeypair = serde_json::from_slice(&keypair_bytes)?;
-                    let guest_owner_priv_key =
-                        EcKey::private_key_from_pem(keypair.privkey.as_bytes())
-                            .map_err(|e| anyhow!("invalid guest-owner private key: {e}"))?;
+                    let signing_keys =
+                        evaluate_signing_policy(&self.signing_policy_engine, &cert_hash, &input)
+                            .await?;
 
                     id_auth = id_auth
-                        .sign_id_key(DEFAULT_KEY_ALGO, guest_owner_priv_key.clone())
+                        .sign_id_key(DEFAULT_KEY_ALGO, signing_keys.privkey.clone())
                         .map_err(|e| anyhow!("failed to sign IDKey with guest-owner key: {e}"))?;
 
-                    let guest_owner_pub_key = SevEcdsaPubKey::try_from(&guest_owner_priv_key)
+                    let guest_owner_pub_key = SevEcdsaPubKey::try_from(&signing_keys.privkey)
                         .map_err(|e| anyhow!("failed to extract guest-owner public key: {e}"))?;
                     let guest_owner_pub_key_bytes = guest_owner_pub_key
                         .to_bytes()
                         .map_err(|e| anyhow!("failed to serialize guest-owner public key: {e}"))?;
                     author_key_b64 = Some(STANDARD.encode(guest_owner_pub_key_bytes.as_ref()));
+
+                    if let Some(addr) = &self.rvps_address {
+                        let auth_key_digest = compute_auth_key_digest(&signing_keys.privkey_pem)?;
+                        let mut certs_map = read_rvps_certs_map(addr).await?;
+                        certs_map.insert(auth_key_digest, cert.clone());
+                        let message = build_rvps_message(&certs_map)?;
+                        reference_value_provider_service::client::register(addr.clone(), message)
+                            .await?;
+                    }
                 }
 
                 let auth_bytes = id_auth
