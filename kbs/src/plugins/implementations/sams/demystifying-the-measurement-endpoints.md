@@ -30,7 +30,7 @@ None
     - Error Codes
         1. If you fail to provide the minimum set of Launch Params to calculate a measurement:
             `400 - Bad Request`
-2. If you ALSO send IDBlock Metadata (`FAMILY_ID` & `IMAGE_ID`), then
+2. If you ALSO send IDBlock Metadata (`GUEST_POLICY`, `FAMILY_ID`, & `IMAGE_ID`), then
 the response body contains:
     - Success Codes
         `200 - OK`
@@ -39,6 +39,7 @@ the response body contains:
             "measurement": "<CVM Launch Measurement>",
             "id-block": "base64({
                 LaunchMeasurement = "< measurement >",
+                GuestPolicy,
                 FamilyID,
                 ImageID,
                 GuestSVN = The current Minimum Acceptable Guest SVN (MAGS), as pulled from RVPS,
@@ -82,6 +83,7 @@ the response body contains:
             "measurement": "<CVM Launch Measurement>",
             "id-block": "base64({
                 LaunchMeasurement = "<measurement>",
+                GuestPolicy,
                 FamilyID,
                 ImageID,
                 GuestSVN = The current Minimum Acceptable Guest SVN (MAGS), as pulled from RVPS,
@@ -115,6 +117,7 @@ SAMS evaluates the guest-owner's **signing-policy** with the launch params as in
             "measurement": "<CVM Launch Measurement>",
             "id-block": "base64({
                 LaunchMeasurement = "<measurement>",
+                GuestPolicy,
                 FamilyID,
                 ImageID,
                 GuestSVN = The current Minimum Acceptable Guest SVN (MAGS), as pulled from RVPS,
