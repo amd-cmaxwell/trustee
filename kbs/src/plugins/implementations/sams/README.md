@@ -274,9 +274,15 @@ sequenceDiagram
             sams -->> kata_runtime: ID Block + IdAuth response
             note over sams, kata_runtime: Response contains:<br>- measurement, id-block<br>- id-auth (SAMS-only)<br>- id-key (SAMS PubKey)
         else /measurement/snp/auth (with guest-owner cert)
-            sams ->> sams: Evaluate guest-owner signing-policy
-            note over sams: input = LaunchParams<br>output = data.policy.pubkey,<br>data.policy.privkey
+            sams ->> policy_engine: Evaluate guest-owner signing-policy
+            note over sams, policy_engine: input = LaunchParams<br>rules = [data.policy.pubkey,<br>data.policy.privkey]
+            policy_engine -->> sams: Signing keypair (PEM)
+            break Signing-policy rejects launch params
+                sams -->> kata_runtime: 403 - Forbidden
+                note over sams: No valid keys for<br>these launch params
+            end
             sams ->> sams: Sign IDKey with policy-selected PrivKey
+            sams ->> sams: Calculate AuthKeyDigest from PubKey
             sams ->> sams: Create IdAuth (full signing)
             sams ->> rvps: Register guest-owner cert<br>keyed by AuthKeyDigest
             sams -->> kata_runtime: ID Block + IdAuth response
