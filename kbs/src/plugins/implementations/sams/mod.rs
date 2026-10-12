@@ -108,14 +108,10 @@ impl ClientPlugin for Sams {
     ) -> Result<Vec<u8>> {
         let empty_headers = HeaderMap::new();
         match (method.as_str(), path) {
+            // --- Handlers that do NOT examine HTTP headers ---
             ("POST", ["measurement", tee_str]) => {
                 let tee = tee_from_path(tee_str)?;
                 self.dispatch("measurement", tee, false, body, &empty_headers)
-                    .await
-            }
-            ("POST", ["measurement", tee_str, "auth"]) => {
-                let tee = tee_from_path(tee_str)?;
-                self.dispatch("measurement", tee, true, body, &empty_headers)
                     .await
             }
             ("POST", ["authorization", "policy", ..]) => {
@@ -139,28 +135,26 @@ impl ClientPlugin for Sams {
         init_data: Option<&serde_json::Value>,
     ) -> Result<Vec<u8>> {
         match (method.as_str(), path) {
-            ("POST", ["measurement", tee_str]) => {
-                let tee = tee_from_path(tee_str)?;
-                self.dispatch("measurement", tee, false, body, headers)
-                    .await
-            }
+            // --- Handlers that examine HTTP headers ---
+            // Bearer JWT (guest-owner cert in "certificate" claim)
             ("POST", ["measurement", tee_str, "auth"]) => {
                 let tee = tee_from_path(tee_str)?;
                 self.dispatch("measurement", tee, true, body, headers).await
             }
+            // mTLS (x-client-cert header from reverse proxy)
             ("POST", ["signing", "policy"]) => {
                 let handler = SigningPolicyHandler::new(
                     self.signing_policy_engine.clone(),
                     self.rvps_address.clone(),
                 );
-                handler.register(headers, body).await
+                handler.register_signing_policy(headers, body).await
             }
             ("DELETE", ["signing", "policy"]) => {
                 let handler = SigningPolicyHandler::new(
                     self.signing_policy_engine.clone(),
                     self.rvps_address.clone(),
                 );
-                handler.revoke(headers).await
+                handler.revoke_signing_policy(headers).await
             }
             ("DELETE", ["signing", "key", digest]) => {
                 let handler = SigningPolicyHandler::new(
