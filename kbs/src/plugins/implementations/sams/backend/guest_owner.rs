@@ -6,7 +6,7 @@ use anyhow::{anyhow, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use key_value_storage::{KeyValueStorage, SetParameters};
 use openssl::ec::EcKey;
-use openssl::sha::sha256;
+use openssl::sha::sha384;
 use serde::{Deserialize, Serialize};
 use sev::measurement::idblock::get_key_digest;
 use sev::measurement::idblock_types::SevEcdsaPubKey;
@@ -43,7 +43,7 @@ fn extract_client_cert(headers: &HeaderMap) -> Result<String> {
 }
 
 fn hash_key(data: &str) -> String {
-    hex::encode(sha256(data.as_bytes()))
+    hex::encode(sha384(data.as_bytes()))
 }
 
 fn compute_auth_key_digest(privkey_pem: &str) -> Result<String> {

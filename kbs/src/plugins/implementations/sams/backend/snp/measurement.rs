@@ -10,7 +10,7 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use key_value_storage::KeyValueStorage;
 use openssl::ec::EcKey;
 use openssl::pkey::Private;
-use openssl::sha::sha256;
+use openssl::sha::sha384;
 use policy_engine::policy::rego::Regorus;
 use policy_engine::policy::rego::RegorusExtension;
 use policy_engine::PolicyEngine;
@@ -89,7 +89,7 @@ fn extract_bearer_token(headers: &HeaderMap) -> Option<String> {
 }
 
 fn hash_key(data: &str) -> String {
-    hex::encode(sha256(data.as_bytes()))
+    hex::encode(sha384(data.as_bytes()))
 }
 
 #[derive(Deserialize)]
