@@ -10,7 +10,7 @@ use actix_web::http::header::HeaderMap;
 use actix_web::http::Method;
 use anyhow::{bail, Result};
 use kbs_types::Tee;
-use key_value_storage::{KeyValueStorage, StorageProvider};
+use key_value_storage::StorageProvider;
 use openssl::ec::EcKey;
 use openssl::pkey::Private;
 use policy_engine::policy::rego::Regorus;
@@ -19,12 +19,11 @@ use serde::Deserialize;
 use sev::measurement::idblock::load_priv_key;
 
 use super::super::plugin_manager::{AuthMode, ClientPlugin};
-use super::resource::RESOURCE_STORAGE_NAMESPACE;
 
 mod api;
 use api::RequestHandler;
 mod backend;
-use backend::guest_owner::GuestOwnerHandler;
+use backend::signing::SigningPolicyHandler;
 
 #[derive(Deserialize, Clone, Debug, PartialEq)]
 pub struct SamsConfig {
@@ -38,9 +37,9 @@ pub struct Sams {
     ovmf_file: PathBuf,
     id_key: EcKey<Private>,
     rvps_address: Option<String>,
-    policy_engine: PolicyEngine<Regorus>,
-    storage: Arc<dyn KeyValueStorage>,
-    secret_storage: Arc<dyn KeyValueStorage>,
+    auth_policy_engine: PolicyEngine<Regorus>,
+    signing_policy_engine: PolicyEngine<Regorus>,
+    storage: Arc<dyn key_value_storage::KeyValueStorage>,
 }
 
 impl Sams {
@@ -49,18 +48,19 @@ impl Sams {
         storage_provider: Arc<dyn StorageProvider>,
     ) -> Result<Self> {
         let storage = storage_provider.get_or_register("sams").await?;
-        let secret_storage = storage_provider
-            .get_or_register(RESOURCE_STORAGE_NAMESPACE)
+        let signing_policy_storage = storage_provider
+            .get_or_register("sams-signing-policies")
             .await?;
         let policy_engine = PolicyEngine::<Regorus>::new(storage.clone());
+        let signing_policy_engine = PolicyEngine::<Regorus>::new(signing_policy_storage);
         let id_key = load_priv_key(config.id_key_file)?;
         Ok(Self {
             ovmf_file: config.ovmf_file,
             id_key,
             rvps_address: config.rvps_address,
-            policy_engine,
+            auth_policy_engine: policy_engine,
+            signing_policy_engine,
             storage,
-            secret_storage,
         })
     }
 }
@@ -88,9 +88,9 @@ impl Sams {
             self.id_key.clone(),
             is_auth,
             self.rvps_address.clone(),
-            self.policy_engine.clone(),
+            self.auth_policy_engine.clone(),
+            self.signing_policy_engine.clone(),
             self.storage.clone(),
-            self.secret_storage.clone(),
         )?;
         handler.handle(body, headers).await
     }
@@ -118,9 +118,9 @@ impl ClientPlugin for Sams {
                 self.dispatch("measurement", tee, true, body, &empty_headers)
                     .await
             }
-            ("POST", ["launch-policy", ..]) => {
+            ("POST", ["authorization", "policy", ..]) => {
                 let mut handler = api::get_launch_policy_handler(
-                    self.policy_engine.clone(),
+                    self.auth_policy_engine.clone(),
                     self.storage.clone(),
                 );
                 handler.handle(body, &empty_headers).await
@@ -148,15 +148,26 @@ impl ClientPlugin for Sams {
                 let tee = tee_from_path(tee_str)?;
                 self.dispatch("measurement", tee, true, body, headers).await
             }
-            ("POST", ["guest-owner"]) => {
-                let handler =
-                    GuestOwnerHandler::new(self.secret_storage.clone(), self.rvps_address.clone());
+            ("POST", ["signing", "policy"]) => {
+                let handler = SigningPolicyHandler::new(
+                    self.signing_policy_engine.clone(),
+                    self.rvps_address.clone(),
+                );
                 handler.register(headers, body).await
             }
-            ("DELETE", ["guest-owner"]) => {
-                let handler =
-                    GuestOwnerHandler::new(self.secret_storage.clone(), self.rvps_address.clone());
+            ("DELETE", ["signing", "policy"]) => {
+                let handler = SigningPolicyHandler::new(
+                    self.signing_policy_engine.clone(),
+                    self.rvps_address.clone(),
+                );
                 handler.revoke(headers).await
+            }
+            ("DELETE", ["signing", "key", digest]) => {
+                let handler = SigningPolicyHandler::new(
+                    self.signing_policy_engine.clone(),
+                    self.rvps_address.clone(),
+                );
+                handler.revoke_signing_key(headers, digest).await
             }
             _ => self.handle(body, query, path, method, init_data).await,
         }
@@ -180,7 +191,7 @@ impl ClientPlugin for Sams {
         _method: &Method,
     ) -> Result<AuthMode> {
         match path {
-            ["measurement", ..] | ["guest-owner"] => Ok(AuthMode::Plugin),
+            ["measurement", ..] | ["signing", ..] => Ok(AuthMode::Plugin),
             _ => Ok(AuthMode::Admin),
         }
     }

@@ -13,23 +13,23 @@ const LAUNCH_POLICY_ID: &str = "launch-policy";
 const MAGS_KEY: &str = "mags";
 
 #[derive(Deserialize)]
-pub struct LaunchPolicyRequest {
+pub struct AuthorizationPolicyRequest {
     pub policy: String,
     #[serde(default)]
     pub incr_gsvn: bool,
 }
 
 #[derive(Serialize)]
-pub struct LaunchPolicyResponse {
+pub struct AuthorizationPolicyResponse {
     pub gsvn: u32,
 }
 
-pub struct LaunchPolicyHandler {
+pub struct AuthorizationPolicyHandler {
     policy_engine: PolicyEngine<Regorus>,
     storage: Arc<dyn KeyValueStorage>,
 }
 
-impl LaunchPolicyHandler {
+impl AuthorizationPolicyHandler {
     pub fn new(policy_engine: PolicyEngine<Regorus>, storage: Arc<dyn KeyValueStorage>) -> Self {
         Self {
             policy_engine,
@@ -57,13 +57,13 @@ async fn write_mags(storage: &dyn KeyValueStorage, value: u32) -> Result<()> {
 }
 
 #[async_trait::async_trait]
-impl RequestHandler for LaunchPolicyHandler {
+impl RequestHandler for AuthorizationPolicyHandler {
     async fn handle(
         &mut self,
         body: &[u8],
         _headers: &actix_web::http::header::HeaderMap,
     ) -> Result<Vec<u8>> {
-        let req: LaunchPolicyRequest = serde_json::from_slice(body)?;
+        let req: AuthorizationPolicyRequest = serde_json::from_slice(body)?;
 
         let rego = String::from_utf8(
             STANDARD
@@ -82,7 +82,7 @@ impl RequestHandler for LaunchPolicyHandler {
         }
 
         let gsvn = read_mags(&*self.storage).await?;
-        let resp = LaunchPolicyResponse { gsvn };
+        let resp = AuthorizationPolicyResponse { gsvn };
         Ok(serde_json::to_vec(&resp)?)
     }
 }

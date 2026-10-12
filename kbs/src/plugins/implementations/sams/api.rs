@@ -10,7 +10,7 @@ use openssl::pkey::Private;
 use policy_engine::policy::rego::Regorus;
 use policy_engine::PolicyEngine;
 
-use super::backend::launch_policy::LaunchPolicyHandler;
+use super::backend::authorization::AuthorizationPolicyHandler;
 use super::backend::snp::measurement::MeasurementHandler as SnpMeasurementHandler;
 
 #[async_trait::async_trait]
@@ -39,9 +39,9 @@ pub fn get_request_handler(
     id_key: EcKey<Private>,
     is_auth: bool,
     rvps_address: Option<String>,
-    policy_engine: PolicyEngine<Regorus>,
+    auth_policy_engine: PolicyEngine<Regorus>,
+    signing_policy_engine: PolicyEngine<Regorus>,
     storage: Arc<dyn KeyValueStorage>,
-    secret_storage: Arc<dyn KeyValueStorage>,
 ) -> Result<MeasurementHandler> {
     match (req_type, tee) {
         ("measurement", Tee::Snp) => Ok(MeasurementHandler::Snp(SnpMeasurementHandler::new(
@@ -49,9 +49,9 @@ pub fn get_request_handler(
             id_key,
             is_auth,
             rvps_address,
-            policy_engine,
+            auth_policy_engine,
+            signing_policy_engine,
             storage,
-            secret_storage,
         ))),
         ("measurement", other) => Err(anyhow!("unsupported TEE type for measurement: {other:?}")),
         _ => Err(anyhow!("unsupported request type: {req_type}")),
@@ -61,6 +61,6 @@ pub fn get_request_handler(
 pub fn get_launch_policy_handler(
     policy_engine: PolicyEngine<Regorus>,
     storage: Arc<dyn KeyValueStorage>,
-) -> LaunchPolicyHandler {
-    LaunchPolicyHandler::new(policy_engine, storage)
+) -> AuthorizationPolicyHandler {
+    AuthorizationPolicyHandler::new(policy_engine, storage)
 }

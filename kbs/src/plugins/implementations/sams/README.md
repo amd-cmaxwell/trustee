@@ -14,7 +14,7 @@ API
 ---
 
 > For full request/response schemas see [Demystifying the Measurement Endpoints](demystifying-the-measurement-endpoints.md).
-> For the dynamic auth key design rationale see [Addendum on Dynamic Auth Keys](addendum-on-dynamic-auth-keys.md).
+> For the signing-policy design rationale see [Addendum on Dynamic Auth Keys](addendum-on-dynamic-auth-keys.md).
 
 ### POST /measurement/\<tee\>/
 #### Requires Admin?
@@ -35,72 +35,111 @@ API
 #### Requires Admin?
 - No
 #### Headers:
-- `Authorization: Bearer <JWT containing "guest-owner-cert": "<mTLS Certificate>">`  _(optional)_
+- `Authorization: Bearer <JWT containing "certificate": "<guest-owner client cert (PEM)>">`  _(optional)_
 #### Request Params:
 - Same as `POST /measurement/<tee>/`, but IDBlock Metadata (FAMILY_ID, IMAGE_ID, & GUEST_POLICY) is **required**
 #### Response (progressive):
-- **Launch params + IDBlock Metadata + SAMS policy approval:**
+- **Launch params + IDBlock Metadata + SAMS authorization policy approval:**
   - `"measurement"`, `"id-block"` (as above)
   - `"id-auth"` (base64-encoded IdAuth with SAMS-only signing: AuthKey fields zeroed)
   - `"id-key"` (SAMS Public Key)
-- **All of the above + registered guest-owner mTLS cert in Bearer Token:**
-  - `"id-auth"` includes guest-owner signing (IdKeySig, AuthKeyAlgo, AuthKeyDigest populated)
-  - `"author-key"` (Guest Owner Public Key)
+- **All of the above + registered guest-owner client cert in Bearer Token:**
+  - SAMS evaluates the guest-owner's **signing-policy** (a Rego policy uploaded during registration) with the launch params as input. The policy selects which signing keypair to use by outputting `data.policy.pubkey` and `data.policy.privkey` (PEM strings).
+  - `"id-auth"` includes guest-owner signing (IdKeySig, AuthKeyAlgo, AuthKeyDigest populated using the policy-selected keys)
+  - `"author-key"` (Guest Owner Public Key, as selected by the signing-policy)
+  - The guest-owner's mTLS cert is registered in RVPS keyed by the AuthKeyDigest of the policy-selected key
 #### Error Codes:
 - `400` — missing required launch params or IDBlock metadata
-- `401` — malformed/expired Bearer Token, invalid cert, or unknown guest-owner
-- `403` — SAMS policy rejects launch params, IDBlock metadata, and/or mTLS cert
+- `401` — malformed/expired Bearer Token, invalid cert, or unknown guest-owner (no signing-policy registered)
+- `403` — authorization policy rejects launch params, or signing-policy does not produce valid keys for these launch params
 
 ---
 
-### POST /guest-owner
+### POST /signing/policy
 #### Requires Admin?
-- No (mTLS-authenticated)
+- No (mTLS-authenticated via proxy)
 #### Prerequisites:
-- Connection must use mTLS. Both the guest owner and SAMS must have leaf certificates issued by a mutually trusted TLS Certificate Authority.
+- Connection must use mTLS, enforced by a TLS-terminating reverse proxy (e.g. nginx, envoy) that forwards the verified client certificate to SAMS via the `X-Client-Cert` header.
+- KBS must be configured with `tls_client_ca_cert` pointing to the CA certificate, or a proxy must handle client cert verification.
 #### Request Params:
 ```json
 {
-    "pubkey": "<Guest Owner Signing Public Key>",
-    "privkey": "<Guest Owner Signing Private Key>"
+    "signing_policy": "<base64-encoded Rego policy>"
 }
 ```
+The Rego policy receives the launch params as `input` and must define two rules:
+- `data.policy.pubkey` — a PEM-encoded EC public key string
+- `data.policy.privkey` — a PEM-encoded EC private key string
+
+This allows guest-owners to define multiple signing keypairs and have SAMS select the appropriate one based on the launch parameters provided to the `/measurement/<tee>/auth` endpoint.
 #### Behavior:
-- Stores the guest owner's mTLS leaf cert in RVPS (keyed by `hash(<pubkey>)`)
-- Stores the guest owner's signing keypair in KBS (keyed by `hash(<leaf-cert>)`)
+- Decodes and validates the base64-encoded Rego policy
+- Stores the signing-policy in SAMS internal storage, keyed by the SHA-384 hash of the guest-owner's mTLS client certificate
 #### Expected usage:
 ```shell
+encoded_policy=$(base64 <<'EOF'
+package policy
+import rego.v1
+
+pubkey := "<PEM public key>"
+privkey := "<PEM private key>"
+EOF
+)
+
 curl \
-    --cert guest-owner-mTLS-leaf-cert-chain.crt \
-    --key guest-owner-mTLS-leaf-cert-private-key.key \
+    --cert guest-owner-client.crt \
+    --key guest-owner-client.key \
     --cacert ca.crt \
-    -X POST http://$kbs_host:$kbs_api_port/kbs/v0/sams/guest-owner \
-    -d '{"pubkey": "...", "privkey": "..."}'
+    -X POST https://$kbs_host:$kbs_api_port/kbs/v0/sams/signing/policy \
+    -H "Content-Type: application/json" \
+    -d "{\"signing_policy\": \"$encoded_policy\"}"
 ```
 
 > See [Addendum on Dynamic Auth Keys](addendum-on-dynamic-auth-keys.md) for the full design rationale.
 
 ---
 
-### DELETE /guest-owner
+### DELETE /signing/policy
 #### Requires Admin?
-- No (mTLS-authenticated)
+- No (mTLS-authenticated via proxy)
 #### Prerequisites:
-- Connection must use mTLS (same CA requirements as registration).
+- Connection must use mTLS (same proxy requirements as registration).
 #### Behavior:
-Upon completion of the mTLS handshake:
-1. Hash the guest owner's leaf cert
-2. Retrieve the guest owner's signing keypair from KBS using that hash
-3. Hash the signing pubkey
-4. Remove the guest owner's leaf cert from RVPS (keyed by pubkey hash)
-5. Remove the guest owner's signing keypair from KBS (keyed by leaf cert hash)
+1. Extract the client cert from the `X-Client-Cert` header (set by the mTLS proxy)
+2. Hash the client cert (SHA-384) and delete the guest-owner's signing-policy from SAMS storage
+3. Remove all of the guest-owner's cert entries from the RVPS `"guest-owner-certs"` map (matching by certificate value)
 #### Expected usage:
 ```shell
 curl \
-    --cert guest-owner-mTLS-leaf-cert-chain.crt \
-    --key guest-owner-mTLS-leaf-cert-private-key.key \
+    --cert guest-owner-client.crt \
+    --key guest-owner-client.key \
     --cacert ca.crt \
-    -X DELETE http://$kbs_host:$kbs_api_port/kbs/v0/sams/guest-owner
+    -X DELETE https://$kbs_host:$kbs_api_port/kbs/v0/sams/signing/policy
+```
+
+---
+
+### DELETE /signing/key/\<base64(AuthKeyDigest)\>
+#### Requires Admin?
+- No (mTLS-authenticated via proxy)
+#### Prerequisites:
+- Connection must use mTLS (same proxy requirements as registration).
+#### Behavior:
+1. Base64-decode the AuthKeyDigest from the URL path
+2. Look up the RVPS `"guest-owner-certs"` map entry for that AuthKeyDigest
+3. If found, verify that the stored certificate matches the caller's mTLS client certificate (returns `403` if mismatched)
+4. Remove the AuthKeyDigest entry from RVPS
+5. Return `200 OK` (idempotent: deleting a non-existent key also returns `200`)
+#### Expected usage:
+```shell
+# Revoke a specific signing key endorsement
+auth_key_digest_b64=$(echo -n "<hex-encoded AuthKeyDigest>" | base64)
+
+curl \
+    --cert guest-owner-client.crt \
+    --key guest-owner-client.key \
+    --cacert ca.crt \
+    -X DELETE https://$kbs_host:$kbs_api_port/kbs/v0/sams/signing/key/$auth_key_digest_b64
 ```
 
 ---
@@ -170,10 +209,15 @@ If `requirePreVerification` is not true, the current (non-SAMS) flow is used and
 the CVM is launched without an ID Block.
 
 When the request targets the `/auth` endpoint and includes a Bearer Token with a
-registered guest owner's mTLS certificate, SAMS also signs the IDKey with the
-guest owner's private key (stored in KBS), producing a full IdAuth with non-zero
-AuthKey fields. See [Addendum on Dynamic Auth Keys](addendum-on-dynamic-auth-keys.md)
-for the full design rationale.
+registered guest owner's client certificate, SAMS evaluates the guest owner's
+**signing-policy** — a Rego policy uploaded during registration — with the launch
+params as input. The policy selects which signing keypair to use, and SAMS signs
+the IDKey with the selected private key, producing a full IdAuth with non-zero
+AuthKey fields. The guest owner's mTLS certificate is then registered in RVPS,
+keyed by the AuthKeyDigest of the selected key.
+
+See [Addendum on Dynamic Auth Keys](addendum-on-dynamic-auth-keys.md) for the
+full design rationale.
 
 > **TODO** Need to update `sev` crate to verify `IDBlockSig` when provided an IDBlock & an IDKey (PubKey)
 >> This facilitates allowing Kata-Runtime to confirm that the IDBlock, IDBlockSig, & IDKey SAMS returns actually match.
@@ -189,7 +233,6 @@ sequenceDiagram
     participant sams as SAMS Plugin
     participant policy_engine as Policy Engine<br>(Regorus)
     participant rvps as RVPS
-    participant kbs as KBS
 
     alt requirePreVerification is NOT true
         note left of kata_runtime: Fallback: launch CVM<br>without ID Block<br>(current flow)
@@ -200,19 +243,11 @@ sequenceDiagram
         note over kata_runtime, sams: LaunchParams = {vcpus, ovmf_hash,<br>kernel_hash, initrd_hash, ...}
         note over kata_runtime, sams: ID Block Metadata = {family_id,<br>image_id, guest_policy}
 
-        opt Guest-owner cert in Bearer Token
-            sams ->> kbs: Retrieve guest-owner signing keypair<br>(keyed by hash of mTLS cert)
-            break Cert unknown to KBS
-                sams -->> kata_runtime: 401 - Unauthorized
-            end
-            kbs -->> sams: Guest-owner keypair
-        end
-
-        opt Pre-Verification against RVPS
+        opt Pre-Verification against RVPS (authorization policy)
             sams ->> policy_engine: Register query_reference_value extension
-            sams ->> policy_engine: Evaluate Launch policy
-            note over sams, policy_engine: input = LaunchParams<br>(+ mTLS cert if present)<br>rules = [data.policy.authorized,<br>data.policy.extensions]
-            note over policy_engine: Policy can also assert on<br>mTLS cert fields<br>(Subject, Extensions, etc.)
+            sams ->> policy_engine: Evaluate authorization policy
+            note over sams, policy_engine: input = LaunchParams<br>(+ client cert if present)<br>rules = [data.policy.authorized,<br>data.policy.extensions]
+            note over policy_engine: Policy can also assert on<br>client cert fields<br>(Subject, Extensions, etc.)
             policy_engine ->> rvps: Query reference values (per rule)
             rvps -->> policy_engine: Reference values
             policy_engine ->> policy_engine: Compare launch params against values
@@ -239,10 +274,13 @@ sequenceDiagram
             sams -->> kata_runtime: ID Block + IdAuth response
             note over sams, kata_runtime: Response contains:<br>- measurement, id-block<br>- id-auth (SAMS-only)<br>- id-key (SAMS PubKey)
         else /measurement/snp/auth (with guest-owner cert)
-            sams ->> sams: Sign IDKey with guest-owner PrivKey
+            sams ->> sams: Evaluate guest-owner signing-policy
+            note over sams: input = LaunchParams<br>output = data.policy.pubkey,<br>data.policy.privkey
+            sams ->> sams: Sign IDKey with policy-selected PrivKey
             sams ->> sams: Create IdAuth (full signing)
+            sams ->> rvps: Register guest-owner cert<br>keyed by AuthKeyDigest
             sams -->> kata_runtime: ID Block + IdAuth response
-            note over sams, kata_runtime: Response contains:<br>- measurement, id-block<br>- id-auth (full: IDBlockSig + IdKeySig)<br>- id-key (SAMS PubKey)<br>- author-key (Guest Owner PubKey)
+            note over sams, kata_runtime: Response contains:<br>- measurement, id-block<br>- id-auth (full: IDBlockSig + IdKeySig)<br>- id-key (SAMS PubKey)<br>- author-key (Guest Owner PubKey,<br>  selected by signing-policy)
         end
     end
 ```
@@ -254,7 +292,7 @@ sequenceDiagram
 Kata Runtime passes the SAMS-provided id-block and id-auth directly to the
 hypervisor. When SAMS handled guest-owner authentication (via the `/auth`
 endpoint), the id-auth already contains the full IdAuth with AuthKey signing
-performed inside SAMS using the guest owner's private key stored in KBS.
+performed inside SAMS using the guest owner's signing-policy-selected key.
 SNP firmware verifies the signatures and compares the actual launch measurement
 against the expected value in the ID Block.
 
@@ -350,8 +388,8 @@ The verified claims are then evaluated by the Policy Engine against the EAR appr
 Policy provisions can query RVPS for reference values, verify the reported GUEST_SVN against
 the Minimum Acceptable Guest SVN (MAGS) from RVPS, and verify the Trustee endorsement by
 comparing the IDKeyDigest against acceptable SAMS public key hashes from RVPS. When a
-guest owner registered their signing keypair via SAMS, verifier policies can also look up
-the guest owner's mTLS leaf cert from RVPS using the AuthKeyDigest as the retrieval key,
+guest owner has a signing-policy registered with SAMS, verifier policies can also look up
+the guest owner's client cert from RVPS using the AuthKeyDigest as the retrieval key,
 and make assertions about the certificate's Subject and Extensions fields. Any mismatch
 adjusts the trust claims at a severity determined by the Verifier Policy Owner. The final
 result is an EAR token encoding the TEE's trustworthiness vector.
@@ -426,8 +464,8 @@ sequenceDiagram
         end
 
         opt Verify Guest Owner identity (AuthKeyDigest)
-            policy_engine ->> rvps: Retrieve guest-owner mTLS leaf cert<br>(keyed by AuthKeyDigest)
-            rvps -->> policy_engine: Guest-owner mTLS certificate
+            policy_engine ->> rvps: query_reference_value("guest-owner-certs")[AuthKeyDigest]
+            rvps -->> policy_engine: Guest-owner client certificate
             policy_engine ->> policy_engine: Assert against cert fields<br>(Subject, Extensions, etc.)
             break Guest-owner cert assertion fails
                 policy_engine ->> policy_engine: Adjust trust claims
@@ -512,7 +550,7 @@ sequenceDiagram
     kata_runtime -->> k8s: Pod created
 ```
 
-### POST /launch-policy
+### POST /authorization/policy
 #### Requires Admin?
 - Yes
 #### Request Params:
@@ -543,7 +581,7 @@ kbs_api_port=8080
 curl -X POST \
     -H "Content-Type: application/json" \
     -d "$payload" \
-    http://$kbs_host:$kbs_api_port/kbs/v0/sams/launch-policy 
+    http://$kbs_host:$kbs_api_port/kbs/v0/sams/authorization/policy
 
 # Expected response: '{"gsvn": 0}'
 ```
@@ -551,5 +589,5 @@ curl -X POST \
 Design Documents
 ---
 - [Demystifying the Measurement Endpoints](demystifying-the-measurement-endpoints.md) — detailed request/response schemas for `/measurement/snp` and `/measurement/snp/auth`
-- [Addendum on Dynamic Auth Keys](addendum-on-dynamic-auth-keys.md) — guest-owner registration, mTLS authentication, and dynamic AuthKey signing design
+- [Addendum on Dynamic Auth Keys](addendum-on-dynamic-auth-keys.md) — guest-owner signing-policy, mTLS proxy authentication, and dynamic AuthKey signing design
 - [Improvements & Open Questions](IMPROVEMENTS.md) — tracked improvements and open design questions
