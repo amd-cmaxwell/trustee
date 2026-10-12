@@ -116,7 +116,7 @@ fn compute_auth_key_digest(privkey_pem: &str) -> Result<String> {
     Ok(hex::encode(digest_bytes))
 }
 
-pub fn build_rvps_message(certs_map: &HashMap<String, String>) -> Result<String> {
+pub fn build_rvps_message(certs_map: &HashMap<String, Vec<String>>) -> Result<String> {
     let payload = serde_json::json!({ RVPS_GUEST_OWNER_CERTS_KEY: certs_map });
     let payload_b64 = STANDARD.encode(serde_json::to_vec(&payload)?);
     let message = serde_json::json!({
@@ -127,7 +127,7 @@ pub fn build_rvps_message(certs_map: &HashMap<String, String>) -> Result<String>
     Ok(serde_json::to_string(&message)?)
 }
 
-pub async fn read_rvps_certs_map(addr: &str) -> Result<HashMap<String, String>> {
+pub async fn read_rvps_certs_map(addr: &str) -> Result<HashMap<String, Vec<String>>> {
     let result = reference_value_provider_service::client::query(
         addr.to_string(),
         RVPS_GUEST_OWNER_CERTS_KEY.to_string(),
@@ -136,7 +136,7 @@ pub async fn read_rvps_certs_map(addr: &str) -> Result<HashMap<String, String>> 
 
     match result {
         Some(json_str) => {
-            let map: HashMap<String, String> = serde_json::from_str(&json_str)?;
+            let map: HashMap<String, Vec<String>> = serde_json::from_str(&json_str)?;
             Ok(map)
         }
         None => Ok(HashMap::new()),
@@ -394,7 +394,10 @@ impl RequestHandler for MeasurementHandler {
                     if let Some(addr) = &self.rvps_address {
                         let auth_key_digest = compute_auth_key_digest(&signing_keys.privkey_pem)?;
                         let mut certs_map = read_rvps_certs_map(addr).await?;
-                        certs_map.insert(auth_key_digest, cert.clone());
+                        let certs = certs_map.entry(auth_key_digest).or_default();
+                        if !certs.contains(cert) {
+                            certs.push(cert.clone());
+                        }
                         let message = build_rvps_message(&certs_map)?;
                         reference_value_provider_service::client::register(addr.clone(), message)
                             .await?;

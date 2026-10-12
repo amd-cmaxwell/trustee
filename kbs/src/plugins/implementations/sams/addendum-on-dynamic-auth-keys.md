@@ -109,12 +109,12 @@ Doing so will trigger SAMS to evaluate the Guest Owner's signing-policy and use 
         8. **Include the following fields in the response body for verification purposes:**
             - The IDKey (SAMS' Public Key)
             - The AuthorKey (Guest Owner's Public Key, as selected by the signing-policy)
-        9. **Register the guest-owner's mTLS cert in RVPS** under the `"guest-owner-certs"` reference value, keyed by the AuthKeyDigest of the policy-selected key
+        9. **Append the guest-owner's mTLS cert to the RVPS `"guest-owner-certs"` list** for the AuthKeyDigest of the policy-selected key (multiple guest-owners sharing a signing key are stored as separate entries under the same digest)
         
 ### Verifying an Attestation Report
 - Verifier Policy Owners will be able to look up Guest Owner client certs from RVPS and make assertions about them in Verifier policies.
-- Verifiers can find the certificate for a guest owner using the Rego expression: `query_reference_value("guest-owner-certs")[<AuthKeyDigest>]` where `<AuthKeyDigest>` is the AuthKeyDigest field from the attestation report.
-    - This allows Verifier policies to make assertions about all the data contained inside the Guest Owner's client certificate, including but not limited to the contents of the `Subject` & `Extensions` fields.
+- Verifiers can find the certificates for a guest owner using the Rego expression: `query_reference_value("guest-owner-certs")[<AuthKeyDigest>]` where `<AuthKeyDigest>` is the AuthKeyDigest field from the attestation report. This returns a **list** of certificates (multiple guest-owners may share a signing key).
+    - This allows Verifier policies to make assertions about all the data contained inside the Guest Owner's client certificates, including but not limited to the contents of the `Subject` & `Extensions` fields.
 
 ### Guest Owner Revocation
 - ***FROM A TRUSTED ENVIRONMENT:*** 
@@ -130,7 +130,7 @@ Guest Owners can revoke their signing-policy and all associated RVPS endorsement
     - Upon receiving the revocation request, the handler:
         1. Extracts the client cert from the `X-Client-Cert` header (set by the mTLS proxy)
         2. Hashes the client cert (SHA-384) and deletes the guest-owner's signing-policy from SAMS storage
-        3. Removes all of the guest-owner's cert entries from the RVPS `"guest-owner-certs"` map (matching by certificate value)
+        3. Removes the guest-owner's cert from all `"guest-owner-certs"` lists in RVPS (matching by certificate value), dropping any AuthKeyDigest entries whose list becomes empty
 
 ### Individual Signing-Key Revocation
 - Guest Owners can also revoke individual signing-key endorsements from RVPS without removing their signing-policy:
@@ -146,9 +146,9 @@ Guest Owners can revoke their signing-policy and all associated RVPS endorsement
         ```
     - Upon receiving the request, the handler:
         1. Base64-decodes the AuthKeyDigest from the URL path
-        2. Looks up the RVPS `"guest-owner-certs"` entry for that AuthKeyDigest
-        3. If found, verifies the stored cert matches the caller's mTLS cert (returns `403` if mismatched)
-        4. Removes the entry from RVPS
+        2. Looks up the RVPS `"guest-owner-certs"` list for that AuthKeyDigest
+        3. If found, verifies the caller's mTLS cert is in the list (returns `403` if not present)
+        4. Removes the caller's cert from the list, dropping the AuthKeyDigest entry if the list becomes empty
         5. Returns `200 OK` (idempotent: deleting a non-existent key also returns `200`)
 
 ## Additional Overhead

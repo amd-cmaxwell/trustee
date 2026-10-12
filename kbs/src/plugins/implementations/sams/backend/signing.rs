@@ -85,7 +85,10 @@ impl SigningPolicyHandler {
 
         if let Some(addr) = &self.rvps_address {
             let mut certs_map = read_rvps_certs_map(addr).await?;
-            certs_map.retain(|_digest, cert| cert != &client_cert);
+            for certs in certs_map.values_mut() {
+                certs.retain(|c| c != &client_cert);
+            }
+            certs_map.retain(|_, certs| !certs.is_empty());
             let message = build_rvps_message(&certs_map)?;
             reference_value_provider_service::client::register(addr.clone(), message).await?;
         }
@@ -114,14 +117,17 @@ impl SigningPolicyHandler {
 
         let mut certs_map = read_rvps_certs_map(addr).await?;
 
-        if let Some(stored_cert) = certs_map.get(&auth_key_digest) {
-            if stored_cert != &client_cert {
+        if let Some(certs) = certs_map.get_mut(&auth_key_digest) {
+            if !certs.contains(&client_cert) {
                 return Err(PluginHttpError::forbidden(
-                    "mTLS certificate does not match the certificate stored for this AuthKeyDigest",
+                    "mTLS certificate does not match any certificate stored for this AuthKeyDigest",
                 ));
             }
 
-            certs_map.remove(&auth_key_digest);
+            certs.retain(|c| c != &client_cert);
+            if certs.is_empty() {
+                certs_map.remove(&auth_key_digest);
+            }
             let message = build_rvps_message(&certs_map)?;
             reference_value_provider_service::client::register(addr.clone(), message).await?;
         }
