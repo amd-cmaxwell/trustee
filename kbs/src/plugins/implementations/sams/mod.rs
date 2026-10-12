@@ -149,19 +149,13 @@ impl ClientPlugin for Sams {
                 self.dispatch("measurement", tee, true, body, headers).await
             }
             ("POST", ["guest-owner"]) => {
-                let handler = GuestOwnerHandler::new(
-                    self.storage.clone(),
-                    self.secret_storage.clone(),
-                    self.rvps_address.clone(),
-                );
+                let handler =
+                    GuestOwnerHandler::new(self.secret_storage.clone(), self.rvps_address.clone());
                 handler.register(headers, body).await
             }
             ("DELETE", ["guest-owner"]) => {
-                let handler = GuestOwnerHandler::new(
-                    self.storage.clone(),
-                    self.secret_storage.clone(),
-                    self.rvps_address.clone(),
-                );
+                let handler =
+                    GuestOwnerHandler::new(self.secret_storage.clone(), self.rvps_address.clone());
                 handler.revoke(headers).await
             }
             _ => self.handle(body, query, path, method, init_data).await,
