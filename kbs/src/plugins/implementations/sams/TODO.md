@@ -1,0 +1,9 @@
+- Currently we need to include the URI to the RSVP in the SAMS Plugin section of the KBS Config file
+    - Should we do something about that?
+- Currently we need to include the path to a base OVMF file in the SAMS Plugin section of the KBS Config file, which SAMS will use to calculate launch measurements. 
+    - Need to investigate supply chain for such an OVMF file
+        - Maybe we package an OVMF into the KBS image every trustee release?
+        - Is it possible to eliminate the need for an OVMF file altogether?
+- SAMS mTLS Cert & RootCA files will need to be rotated from time to time. 
+    - Need to facilite mTLS cert rotation in an easy-to-rollover manner.
+        - This is likely to be out of scoop for SAMS itself & would be the trustee deployers responsibility to use an external_secrets operator inside of their trustee k8s cluster.
