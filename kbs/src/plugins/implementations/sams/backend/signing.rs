@@ -49,7 +49,7 @@ impl SigningPolicyHandler {
         }
     }
 
-    pub async fn register(&self, headers: &HeaderMap, body: &[u8]) -> Result<Vec<u8>> {
+    pub async fn register_signing_policy(&self, headers: &HeaderMap, body: &[u8]) -> Result<Vec<u8>> {
         let client_cert = extract_client_cert(headers)?;
         let req: SigningPolicyRequest = serde_json::from_slice(body)?;
 
@@ -71,7 +71,7 @@ impl SigningPolicyHandler {
         Ok(b"{}".to_vec())
     }
 
-    pub async fn revoke(&self, headers: &HeaderMap) -> Result<Vec<u8>> {
+    pub async fn revoke_signing_policy(&self, headers: &HeaderMap) -> Result<Vec<u8>> {
         let client_cert = extract_client_cert(headers)?;
         let cert_hash = hash_cert(&client_cert);
         let policy_id = signing_policy_id(&cert_hash);
