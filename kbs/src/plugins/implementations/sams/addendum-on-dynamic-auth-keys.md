@@ -172,4 +172,5 @@ Guest Owners can revoke their signing-policy and all associated RVPS endorsement
 ### For Guest Owners
 - Guest Owners must obtain a client certificate & private key from a trusted TLS Certificate Authority recognized by the mTLS proxy or KBS.
 - Guest Owners must remember to rotate their client certs before they expire, else they risk not being able to register or revoke signing-policies with SAMS.
+- **After rotating an mTLS certificate, Guest Owners must re-register their signing-policy with SAMS using the new certificate.** The signing-policy is keyed internally by the SHA-384 hash of the client certificate, so a rotated cert is a new identity from SAMS' perspective. The old cert's RVPS endorsements will remain until explicitly revoked via `DELETE /signing/policy` using the old cert (before it expires) or cleaned up by an admin.
 - Guest Owners are responsible for embedding their signing keypairs in their Rego signing-policies. The policies should be crafted to select the appropriate keypair based on the expected launch parameters.

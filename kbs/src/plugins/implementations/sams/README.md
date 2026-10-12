@@ -75,6 +75,8 @@ This allows guest-owners to define multiple signing keypairs and have SAMS selec
 #### Behavior:
 - Decodes and validates the base64-encoded Rego policy
 - Stores the signing-policy in SAMS internal storage, keyed by the SHA-384 hash of the guest-owner's mTLS client certificate
+
+> **Note on cert rotation:** After rotating an mTLS certificate, guest-owners must re-register their signing-policy using the new certificate. A rotated cert is a new identity from SAMS' perspective. See [Addendum on Dynamic Auth Keys](addendum-on-dynamic-auth-keys.md) for details.
 #### Expected usage:
 ```shell
 encoded_policy=$(base64 <<'EOF'
