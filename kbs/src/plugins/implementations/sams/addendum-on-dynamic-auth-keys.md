@@ -15,56 +15,69 @@
 Guest Owners should "register" a "signing-policy" with SAMS over an mTLS connection.
 The mTLS handshake is terminated by a reverse proxy (e.g. nginx, envoy) which forwards the
 verified client certificate to SAMS via the `X-Client-Cert` header.
+- ***Inside of Trustee:***
+    - **SAMS validates and stores the signing-policy** in SAMS internal storage, keyed by the SHA-384 hash of the guest-owner's mTLS client certificate.
 
 The signing-policy is a Rego policy that receives launch params as input and outputs
 `data.policy.pubkey` and `data.policy.privkey` (PEM-encoded EC key strings). This allows
 guest-owners to define multiple signing keypairs and have SAMS select the appropriate one
-based on the launch parameters:
-    - Example Usage:
-        **Note**: the ca.crt is the certificate of the TLS Certificate Authority who has issued leaf-certs to both the guest owner & to the mTLS proxy
-        ```shell
-        # Guest Owner registers a signing-policy w/ SAMS
-        encoded_policy=$(base64 <<'EOF'
-        package policy
-        import rego.v1
+based on the launch parameters,
 
-        # Simple policy with a single keypair
-        pubkey := "<PEM public key>"
-        privkey := "<PEM private key>"
-        EOF
-        )
+#### Example Usage:
 
-        curl \
-            --cert guest-owner-client.crt \
-            --key guest-owner-client.key \
-            --cacert ca.crt \
-            -X POST https://$kbs_host:$kbs_api_port/kbs/v0/sams/signing/policy \
-            -H "Content-Type: application/json" \
-            -d "{\"signing_policy\": \"$encoded_policy\"}"
-        ```
+```shell
+# Guest Owner registers a signing-policy w/ SAMS
+encoded_policy=$(base64 signing-policy.rego)
+curl \
+    --cert guest-owner-client.crt \
+    --key guest-owner-client.key \
+    --cacert ca.crt \
+    -X POST https://$kbs_host:$kbs_api_port/kbs/v0/sams/signing/policy \
+    -H "Content-Type: application/json" \
+    -d "{\"signing_policy\": \"$encoded_policy\"}"
+```
 
-    An advanced policy that selects different keypairs based on launch params:
-        ```rego
-        package policy
-        import rego.v1
+> **Note**: the ca.crt is the certificate of the TLS Certificate Authority who has issued leaf-certs to both the guest owner & to the mTLS proxy
 
-        # Use one keypair for production family, another for staging
-        pubkey := "<prod PEM public key>" if {
-            input.family_id == "0123456789abcdef"
-        }
-        pubkey := "<staging PEM public key>" if {
-            input.family_id == "fedcba9876543210"
-        }
+#### Example Signing Policies:
+##### The Elementary Signing Policy:
+```rego
+# The most basic signing policy is as follows:
 
-        privkey := "<prod PEM private key>" if {
-            input.family_id == "0123456789abcdef"
-        }
-        privkey := "<staging PEM private key>" if {
-            input.family_id == "fedcba9876543210"
-        }
-        ```
-- ***Inside of Trustee:***
-    - **SAMS validates and stores the signing-policy** in SAMS internal storage, keyed by the SHA-384 hash of the guest-owner's mTLS client certificate.
+# In all cases, 
+#  IDBlocks generated for this guest-owner
+#  should be signed with the provided keypair
+
+package policy
+import rego.v1
+
+pubkey := "<PEM public key>"
+privkey := "<PEM private key>"
+```
+
+##### An Advanced Signing Policy:
+```rego
+# An advanced policy that selects different keypairs based on launch params:
+
+package policy
+import rego.v1
+
+# Use one keypair for production family, another for staging
+pubkey := "<prod PEM public key>" if {
+    input.family_id == "0123456789abcdef"
+}
+pubkey := "<staging PEM public key>" if {
+    input.family_id == "fedcba9876543210"
+}
+
+privkey := "<prod PEM private key>" if {
+    input.family_id == "0123456789abcdef"
+}
+privkey := "<staging PEM private key>" if {
+    input.family_id == "fedcba9876543210"
+}
+```
+
 ### Requesting an ID Block
 - ***From the UNTRUSTED Host:***
 The ID Block Requester (Kata-Runtime) can opt to send the `/sams/measurement/snp/auth` Endpoint a Bearer Token containing a JWT with the Guest Owner's client certificate in the `"certificate"` claim. Since the certificate is public, it is safe to give to the untrusted host.
