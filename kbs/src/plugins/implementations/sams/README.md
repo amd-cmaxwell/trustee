@@ -47,7 +47,7 @@ API
   - SAMS evaluates the guest-owner's **signing-policy** (a Rego policy uploaded during registration) with the launch params as input. The policy selects which signing keypair to use by outputting `data.policy.pubkey` and `data.policy.privkey` (PEM strings).
   - `"id-auth"` includes guest-owner signing (IdKeySig, AuthKeyAlgo, AuthKeyDigest populated using the policy-selected keys)
   - `"author-key"` (Guest Owner Public Key, as selected by the signing-policy)
-  - The guest-owner's mTLS cert is registered in RVPS keyed by the AuthKeyDigest of the policy-selected key
+  - The guest-owner's mTLS cert is appended to the RVPS `"guest-owner-certs"` list for the AuthKeyDigest of the policy-selected key (multiple guest-owners sharing a signing key are stored as separate entries under the same digest)
 #### Error Codes:
 - `400` — missing required launch params or IDBlock metadata
 - `401` — malformed/expired Bearer Token, invalid cert, or unknown guest-owner (no signing-policy registered)
@@ -107,7 +107,7 @@ curl \
 #### Behavior:
 1. Extract the client cert from the `X-Client-Cert` header (set by the mTLS proxy)
 2. Hash the client cert (SHA-384) and delete the guest-owner's signing-policy from SAMS storage
-3. Remove all of the guest-owner's cert entries from the RVPS `"guest-owner-certs"` map (matching by certificate value)
+3. Remove the guest-owner's cert from all `"guest-owner-certs"` lists in RVPS (matching by certificate value), dropping any AuthKeyDigest entries whose list becomes empty
 #### Expected usage:
 ```shell
 curl \
@@ -126,9 +126,9 @@ curl \
 - Connection must use mTLS (same proxy requirements as registration).
 #### Behavior:
 1. Base64-decode the AuthKeyDigest from the URL path
-2. Look up the RVPS `"guest-owner-certs"` map entry for that AuthKeyDigest
-3. If found, verify that the stored certificate matches the caller's mTLS client certificate (returns `403` if mismatched)
-4. Remove the AuthKeyDigest entry from RVPS
+2. Look up the RVPS `"guest-owner-certs"` list for that AuthKeyDigest
+3. If found, verify that the caller's mTLS client certificate is in the list (returns `403` if not present)
+4. Remove the caller's cert from the list, dropping the AuthKeyDigest entry if the list becomes empty
 5. Return `200 OK` (idempotent: deleting a non-existent key also returns `200`)
 #### Expected usage:
 ```shell
@@ -395,8 +395,9 @@ Policy provisions can query RVPS for reference values, verify the reported GUEST
 the Minimum Acceptable Guest SVN (MAGS) from RVPS, and verify the Trustee endorsement by
 comparing the IDKeyDigest against acceptable SAMS public key hashes from RVPS. When a
 guest owner has a signing-policy registered with SAMS, verifier policies can also look up
-the guest owner's client cert from RVPS using the AuthKeyDigest as the retrieval key,
-and make assertions about the certificate's Subject and Extensions fields. Any mismatch
+the guest owner's client certs from RVPS using the AuthKeyDigest as the retrieval key
+(multiple certs may be returned if different guest-owners share a signing key),
+and make assertions about each certificate's Subject and Extensions fields. Any mismatch
 adjusts the trust claims at a severity determined by the Verifier Policy Owner. The final
 result is an EAR token encoding the TEE's trustworthiness vector.
 
@@ -471,8 +472,8 @@ sequenceDiagram
 
         opt Verify Guest Owner identity (AuthKeyDigest)
             policy_engine ->> rvps: query_reference_value("guest-owner-certs")[AuthKeyDigest]
-            rvps -->> policy_engine: Guest-owner client certificate
-            policy_engine ->> policy_engine: Assert against cert fields<br>(Subject, Extensions, etc.)
+            rvps -->> policy_engine: Guest-owner client certificates (list)
+            policy_engine ->> policy_engine: Assert against cert fields<br>(Subject, Extensions, etc.)<br>for each certificate in list
             break Guest-owner cert assertion fails
                 policy_engine ->> policy_engine: Adjust trust claims
                 note over policy_engine: Severity determined by<br>Verifier Policy Owner
