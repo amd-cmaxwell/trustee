@@ -119,7 +119,7 @@ impl ClientPlugin for Sams {
                     .await
             }
             ("POST", ["authorization", "policy", ..]) => {
-                let mut handler = api::get_launch_policy_handler(
+                let mut handler = api::get_auth_policy_handler(
                     self.auth_policy_engine.clone(),
                     self.storage.clone(),
                 );

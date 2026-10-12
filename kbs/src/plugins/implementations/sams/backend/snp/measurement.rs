@@ -26,10 +26,9 @@ use sev::measurement::vmsa::{GuestFeatures, VMMType};
 use sev::parser::ByteParser;
 
 use super::super::super::api::RequestHandler;
+use super::super::authorization::{AUTH_POLICY_ID, MAGS_KEY};
 use super::super::signing::{hash_cert, signing_policy_id};
 
-const AUTH_POLICY_ID: &str = "auth-policy";
-const MAGS_KEY: &str = "mags";
 const AUTH_POLICY_RULE: &str = "data.policy.authorized";
 const SIGNING_POLICY_PUBKEY_RULE: &str = "data.policy.pubkey";
 const SIGNING_POLICY_PRIVKEY_RULE: &str = "data.policy.privkey";
