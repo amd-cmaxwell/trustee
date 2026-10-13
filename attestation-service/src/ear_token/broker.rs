@@ -532,7 +532,7 @@ async fn verify_snp_key_endorsement(claims: &mut Value, rvps_client: &RvpsClient
         claims_map.insert("sams_id_key_endorsed".to_string(), Value::Bool(endorsed));
     }
 
-    // Verify guest-owner AuthorKey endorsement
+    // Verify guest-owner AuthorKey endorsement and resolve certs
     let author_key_en = claims_map
         .get("author_key_en")
         .and_then(|v| v.as_bool())
@@ -543,12 +543,9 @@ async fn verify_snp_key_endorsement(claims: &mut Value, rvps_client: &RvpsClient
             claims_map.get("author_key_digest").and_then(|v| v.as_str())
         {
             let author_key_digest = author_key_digest.to_string();
-            let endorsed = match rvps_client
-                .lock()
-                .await
-                .query_reference_value("guest-owner-pubkeys")
-                .await?
-            {
+            let rvps = rvps_client.lock().await;
+
+            let endorsed = match rvps.query_reference_value("guest-owner-pubkeys").await? {
                 Some(rvps_value) => {
                     let pubkeys_map: HashMap<String, String> = serde_json::from_value(rvps_value)?;
                     pubkeys_map.contains_key(&author_key_digest)
@@ -556,10 +553,72 @@ async fn verify_snp_key_endorsement(claims: &mut Value, rvps_client: &RvpsClient
                 None => false,
             };
             claims_map.insert("author_key_endorsed".to_string(), Value::Bool(endorsed));
+
+            if let Some(rvps_value) = rvps.query_reference_value("guest-owner-certs").await? {
+                let certs_map: HashMap<String, Vec<String>> = serde_json::from_value(rvps_value)?;
+                if let Some(pem_certs) = certs_map.get(&author_key_digest) {
+                    let parsed: Vec<Value> = pem_certs
+                        .iter()
+                        .filter_map(|pem| parse_x509_to_json(pem).ok())
+                        .collect();
+                    claims_map.insert("guest_owner_certs".to_string(), Value::Array(parsed));
+                }
+            }
         }
     }
 
     Ok(())
+}
+
+fn x509_name_to_json(name: &openssl::x509::X509NameRef) -> Value {
+    let mut map = serde_json::Map::new();
+    for entry in name.entries() {
+        let key = entry.object().nid().short_name().unwrap_or("unknown");
+        let val = entry.data().to_string().unwrap_or_default();
+        map.insert(key.to_string(), Value::String(val));
+    }
+    Value::Object(map)
+}
+
+fn parse_x509_to_json(pem: &str) -> Result<Value> {
+    let cert = X509::from_pem(pem.as_bytes()).context("failed to parse guest-owner cert PEM")?;
+    let subject = x509_name_to_json(cert.subject_name());
+    let issuer = x509_name_to_json(cert.issuer_name());
+    let serial = cert
+        .serial_number()
+        .to_bn()
+        .map(|bn| bn.to_hex_str().map(|s| s.to_string()))
+        .ok()
+        .and_then(|r| r.ok())
+        .unwrap_or_default();
+    let not_before = cert.not_before().to_string();
+    let not_after = cert.not_after().to_string();
+
+    let mut extensions = serde_json::Map::new();
+    if let Some(san) = cert.subject_alt_names() {
+        let names: Vec<String> = san
+            .iter()
+            .filter_map(|n| {
+                n.dnsname()
+                    .map(String::from)
+                    .or_else(|| n.email().map(String::from))
+                    .or_else(|| n.uri().map(String::from))
+                    .or_else(|| n.ipaddress().map(|ip| format!("{ip:?}")))
+            })
+            .collect();
+        if !names.is_empty() {
+            extensions.insert("subject_alt_names".to_string(), json!(names));
+        }
+    }
+
+    Ok(json!({
+        "subject": subject,
+        "issuer": issuer,
+        "serial": serial,
+        "not_before": not_before,
+        "not_after": not_after,
+        "extensions": extensions,
+    }))
 }
 
 #[cfg(test)]

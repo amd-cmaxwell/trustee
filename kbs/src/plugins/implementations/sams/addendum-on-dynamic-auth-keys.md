@@ -101,8 +101,8 @@ Doing so will trigger SAMS to evaluate the Guest Owner's signing-policy and use 
         1. Extract the certificate from the JWT's `"certificate"` claim and hash it (SHA-384)
         2. Check that a signing-policy is stored for that cert hash
         3. Reject the request with `401 - Unauthorized` if no signing-policy is found
-        4. Pass the certificate into the authorization policy engine, alongside the CVM launch parameters & ID Block metadata, for SAMS Policy Owners to make assertions about.
-            - This allows SAMS policy owners to make assertions about all the data contained inside the Guest Owner's client certificate, including but not limited to the contents of the `Subject` & `Extensions` fields
+        4. Parse the certificate into a structured JSON object (`guest_owner_cert`) containing `subject`, `issuer`, `serial`, `not_before`, `not_after`, and `extensions` fields, and pass it into the authorization policy engine alongside the CVM launch parameters & ID Block metadata.
+            - This allows SAMS policy owners to make assertions about the Guest Owner's client certificate fields, e.g. `input.guest_owner_cert.subject.O == "Acme Corp"` or `input.guest_owner_cert.extensions.subject_alt_names[0] == "guest.example.com"`
     
     - **If evaluation of the authorization policy returns "authorized",**
     SAMS will:
@@ -130,9 +130,9 @@ Doing so will trigger SAMS to evaluate the Guest Owner's signing-policy and use 
 - Before policy evaluation, the EAR token broker automatically verifies key endorsement:
     - It retrieves the SAMS IDKey public key from RVPS (`"sams-id-key"`), computes its SHA-384 digest, and compares it against the report's `id_key_digest`. The result is injected as a `sams_id_key_endorsed` boolean claim.
     - If `author_key_en` is true, the broker checks whether `author_key_digest` exists as a key in the RVPS `"guest-owner-pubkeys"` map. The result is injected as an `author_key_endorsed` boolean claim.
-- Verifier Policy Owners can use `sams_id_key_endorsed` and `author_key_endorsed` in their policies to set trust claims accordingly.
-- Verifier policies can also look up Guest Owner client certs from RVPS using the Rego expression: `query_reference_value("guest-owner-certs")[<AuthKeyDigest>]` where `<AuthKeyDigest>` is the AuthKeyDigest field from the attestation report. This returns a **list** of certificates (multiple guest-owners may share a signing key).
-    - This allows Verifier policies to make assertions about all the data contained inside the Guest Owner's client certificates, including but not limited to the contents of the `Subject` & `Extensions` fields.
+    - If `author_key_en` is true, the broker also retrieves the guest-owner's mTLS certificates from RVPS (`"guest-owner-certs"` list for the AuthKeyDigest), parses each PEM certificate into a structured JSON object, and injects them as `guest_owner_certs` in the claims. Each object contains `subject`, `issuer`, `serial`, `not_before`, `not_after`, and `extensions` fields.
+- Verifier Policy Owners can use `sams_id_key_endorsed`, `author_key_endorsed`, and `guest_owner_certs` in their policies to set trust claims accordingly.
+- Example policy assertion: `input.guest_owner_certs[i].subject.O == "Acme Corp"` or `input.guest_owner_certs[i].extensions.subject_alt_names[j] == "guest.example.com"`.
 
 ### Guest Owner Revocation
 - ***FROM A TRUSTED ENVIRONMENT:*** 
