@@ -37,7 +37,7 @@ curl \
     -d "{\"signing_policy\": \"$encoded_policy\"}"
 ```
 
-> **Note**: the ca.crt is the certificate of the TLS Certificate Authority who has issued leaf-certs to both the guest owner & to the mTLS proxy
+> **Note**: the ca.crt is the CA certificate that SAMS (or its mTLS proxy) is configured to trust for client certificate verification. The guest owner's client cert must be issued by this CA.
 
 #### Example Signing Policies:
 ##### The Elementary Signing Policy:
