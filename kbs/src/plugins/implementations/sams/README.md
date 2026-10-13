@@ -92,6 +92,7 @@ Primary endpoint for Kata Runtime at CVM launch. Like `/measurement/<tee>/` but 
   - `"id-auth"` includes guest-owner signing (IdKeySig, AuthKeyAlgo, AuthKeyDigest populated using the policy-selected keys)
   - `"author-key"` (Guest Owner Public Key, as selected by the signing-policy)
   - The guest-owner's mTLS cert is appended to the RVPS `"guest-owner-certs"` list for the AuthKeyDigest of the policy-selected key (multiple guest-owners sharing a signing key are stored as separate entries under the same digest)
+  - The guest-owner's public signing key is stored in the RVPS `"guest-owner-pubkeys"` map, keyed by AuthKeyDigest
 #### Error Codes:
 - `400` — missing required launch params or IDBlock metadata
 - `401` — malformed/expired Bearer Token, invalid cert, or unknown guest-owner (no signing-policy registered)
@@ -181,7 +182,8 @@ Revokes a single signing-key endorsement from RVPS without touching the signing-
 2. Look up the RVPS `"guest-owner-certs"` list for that AuthKeyDigest
 3. If found, verify that the caller's mTLS client certificate is in the list (returns `403` if not present)
 4. Remove the caller's cert from the list, dropping the AuthKeyDigest entry if the list becomes empty
-5. Return `200 OK` (idempotent: deleting a non-existent key also returns `200`)
+5. If the AuthKeyDigest entry was fully removed, also remove the corresponding entry from `"guest-owner-pubkeys"` in RVPS
+6. Return `200 OK` (idempotent: deleting a non-existent key also returns `200`)
 #### Expected usage:
 ```shell
 # Revoke a specific signing key endorsement
@@ -338,6 +340,7 @@ sequenceDiagram
             sams ->> sams: Calculate AuthKeyDigest from PubKey
             sams ->> sams: Create IdAuth (full signing)
             sams ->> rvps: Register guest-owner cert<br>keyed by AuthKeyDigest
+            sams ->> rvps: Register guest-owner pubkey<br>keyed by AuthKeyDigest
             sams -->> kata_runtime: ID Block + IdAuth response
             note over sams, kata_runtime: Response contains:<br>- measurement, id-block<br>- id-auth (full: IDBlockSig + IdKeySig)<br>- id-key (SAMS PubKey)<br>- author-key (Guest Owner PubKey,<br>  selected by signing-policy)
         end
@@ -443,23 +446,30 @@ sequenceDiagram
 The SNP Verifier validates the attestation report in three stages: first, it verifies the
 AMD certificate chain (hardware endorsement); second, it checks that the hashes of the
 provided initdata and runtimedata match the HOST_DATA and REPORT_DATA fields in the report.
+The verifier now extracts additional claims from the report: `id_key_digest`,
+`author_key_digest`, `author_key_en`, `family_id`, `image_id`, and `guest_svn`.
+
+Before policy evaluation, the EAR token broker verifies SAMS key endorsement by retrieving
+the SAMS IDKey public key (`"sams-id-key"`) from RVPS, computing its SHA-384 digest, and
+comparing it against the `id_key_digest` claim from the report. If `author_key_en` is true,
+the broker also checks whether the `author_key_digest` exists in the `"guest-owner-pubkeys"`
+map in RVPS. The results are injected as `sams_id_key_endorsed` and `author_key_endorsed`
+boolean claims, available to the policy engine for trust decisions.
+
 The verified claims are then evaluated by the Policy Engine against the EAR appraisal policy.
-Policy provisions can query RVPS for reference values, verify the reported GUEST_SVN against
-the Minimum Acceptable Guest SVN (MAGS) from RVPS, and verify the Trustee endorsement by
-comparing the IDKeyDigest against acceptable SAMS public key hashes from RVPS. When a
-guest owner has a signing-policy registered with SAMS, verifier policies can also look up
-the guest owner's client certs from RVPS using the AuthKeyDigest as the retrieval key
-(multiple certs may be returned if different guest-owners share a signing key),
-and make assertions about each certificate's Subject and Extensions fields. Any mismatch
-adjusts the trust claims at a severity determined by the Verifier Policy Owner. The final
-result is an EAR token encoding the TEE's trustworthiness vector.
+Policy provisions can query RVPS for reference values, verify the reported `guest_svn` against
+the Minimum Acceptable Guest SVN (MAGS) from RVPS, and check the `sams_id_key_endorsed` and
+`author_key_endorsed` flags injected by the broker. When a guest owner has a signing-policy
+registered with SAMS, verifier policies can also look up the guest owner's client certs from
+RVPS using the AuthKeyDigest as the retrieval key (multiple certs may be returned if different
+guest-owners share a signing key), and make assertions about each certificate's Subject and
+Extensions fields. Any mismatch adjusts the trust claims at a severity determined by the
+Verifier Policy Owner. The final result is an EAR token encoding the TEE's trustworthiness
+vector.
 
 > **TODO:** `ear_default_policy_cpu.rego` needs to be updated to set the trustworthiness
-> vector status to "warning" or "contraindicated" when guest svn verification
-> or Trustee endorsement verification fails.
-
-> **TODO:** Consider using IMAGE_ID and FAMILY_ID fields from the attestation report in
-> verification policies, e.g. to identify the kata-runtime version.
+> vector status to "warning" or "contraindicated" when `sams_id_key_endorsed` or
+> `author_key_endorsed` is false.
 
 ```mermaid
 sequenceDiagram
@@ -490,10 +500,25 @@ sequenceDiagram
         end
     end
 
+    critical Verify SAMS key endorsement (EAR broker)
+        note over snp_verifier, rvps: Before policy evaluation, the EAR<br>token broker checks key endorsement
+        snp_verifier ->> rvps: query_reference_value("sams-id-key")
+        rvps -->> snp_verifier: SAMS IDKey pubkey (base64)
+        snp_verifier ->> snp_verifier: SHA-384(pubkey bytes)<br>== id_key_digest?
+        note over snp_verifier: Inject sams_id_key_endorsed<br>into claims
+
+        opt author_key_en is true
+            snp_verifier ->> rvps: query_reference_value("guest-owner-pubkeys")
+            rvps -->> snp_verifier: AuthKeyDigest -> pubkey map
+            snp_verifier ->> snp_verifier: author_key_digest in map?
+            note over snp_verifier: Inject author_key_endorsed<br>into claims
+        end
+    end
+
     critical Evaluate appraisal policy
         snp_verifier ->> policy_engine: Register query_reference_value extension
         snp_verifier ->> policy_engine: Evaluate EAR policy for TEE class
-        note over snp_verifier, policy_engine: input = claims from report,<br>initdata, & runtimedata<br>rules = [data.policy.trust_claims,<br>data.policy.extensions]
+        note over snp_verifier, policy_engine: input = claims from report<br>(incl. sams_id_key_endorsed,<br>author_key_endorsed, guest_svn,<br>family_id, image_id)<br>rules = [data.policy.trust_claims,<br>data.policy.extensions]
 
         loop For each policy provision
             opt Provision queries reference values
@@ -506,30 +531,33 @@ sequenceDiagram
         opt Verify Guest SVN
             policy_engine ->> rvps: Retrieve Minimum Acceptable Guest SVN (MAGS)
             rvps -->> policy_engine: MAGS Value
-            policy_engine ->> policy_engine: Compare Reported Guest SVN<br> against MAGS Value
+            policy_engine ->> policy_engine: Compare guest_svn against MAGS
             break Reported Guest SVN non-compliant
                 policy_engine ->> policy_engine: Adjust trust claims
                 note over policy_engine: Severity determined by<br>Verifier Policy Owner
             end
         end
 
-        opt Verify Trustee endorsement (IDKeyDigest)
-            policy_engine ->> rvps: Retrieve acceptable<br>SAMS public key hashes (SHA-384)
-            rvps -->> policy_engine: Acceptable public key hashes
-            policy_engine ->> policy_engine: Compare IDKeyDigest<br>against acceptable hashes
-            break No IDKeyDigest match
+        opt Check SAMS endorsement
+            policy_engine ->> policy_engine: Check sams_id_key_endorsed
+            break sams_id_key_endorsed is false
                 policy_engine ->> policy_engine: Adjust trust claims
-                note over policy_engine: Severity determined by<br>Verifier Policy Owner
             end
         end
 
-        opt Verify Guest Owner identity (AuthKeyDigest)
+        opt Check Guest Owner endorsement
+            policy_engine ->> policy_engine: Check author_key_endorsed
+            break author_key_endorsed is false
+                policy_engine ->> policy_engine: Adjust trust claims
+            end
+        end
+
+        opt Verify Guest Owner identity (certs)
             policy_engine ->> rvps: query_reference_value("guest-owner-certs")[AuthKeyDigest]
             rvps -->> policy_engine: Guest-owner client certificates (list)
-            policy_engine ->> policy_engine: Assert against cert fields<br>(Subject, Extensions, etc.)<br>for each certificate in list
+            policy_engine ->> policy_engine: Assert against cert fields<br>(Subject, Extensions, etc.)
             break Guest-owner cert assertion fails
                 policy_engine ->> policy_engine: Adjust trust claims
-                note over policy_engine: Severity determined by<br>Verifier Policy Owner
             end
         end
 
