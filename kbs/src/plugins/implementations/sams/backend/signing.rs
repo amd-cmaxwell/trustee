@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use actix_web::http::header::HeaderMap;
 use anyhow::{anyhow, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -6,6 +8,7 @@ use policy_engine::policy::rego::Regorus;
 use policy_engine::PolicyEngine;
 use serde::Deserialize;
 
+use crate::plugins::implementations::sams::rvps_client::RvpsClient;
 use crate::plugins::plugin_manager::PluginHttpError;
 
 use super::snp::measurement::{build_rvps_message, read_rvps_certs_map};
@@ -38,18 +41,25 @@ pub fn hash_cert(data: &str) -> String {
 
 pub struct SigningPolicyHandler {
     signing_policy_engine: PolicyEngine<Regorus>,
-    rvps_address: Option<String>,
+    rvps_client: Option<Arc<dyn RvpsClient>>,
 }
 
 impl SigningPolicyHandler {
-    pub fn new(signing_policy_engine: PolicyEngine<Regorus>, rvps_address: Option<String>) -> Self {
+    pub fn new(
+        signing_policy_engine: PolicyEngine<Regorus>,
+        rvps_client: Option<Arc<dyn RvpsClient>>,
+    ) -> Self {
         Self {
             signing_policy_engine,
-            rvps_address,
+            rvps_client,
         }
     }
 
-    pub async fn register_signing_policy(&self, headers: &HeaderMap, body: &[u8]) -> Result<Vec<u8>> {
+    pub async fn register_signing_policy(
+        &self,
+        headers: &HeaderMap,
+        body: &[u8],
+    ) -> Result<Vec<u8>> {
         let client_cert = extract_client_cert(headers)?;
         let req: SigningPolicyRequest = serde_json::from_slice(body)?;
 
@@ -83,14 +93,14 @@ impl SigningPolicyHandler {
             .await
             .map_err(|e| anyhow!("failed to delete signing policy: {e}"))?;
 
-        if let Some(addr) = &self.rvps_address {
-            let mut certs_map = read_rvps_certs_map(addr).await?;
+        if let Some(client) = &self.rvps_client {
+            let mut certs_map = read_rvps_certs_map(client.as_ref()).await?;
             for certs in certs_map.values_mut() {
                 certs.retain(|c| c != &client_cert);
             }
             certs_map.retain(|_, certs| !certs.is_empty());
             let message = build_rvps_message(&certs_map)?;
-            reference_value_provider_service::client::register(addr.clone(), message).await?;
+            client.register(message).await?;
         }
 
         Ok(b"{}".to_vec())
@@ -110,12 +120,12 @@ impl SigningPolicyHandler {
         )
         .map_err(|e| anyhow!("AuthKeyDigest is not valid UTF-8: {e}"))?;
 
-        let addr = self
-            .rvps_address
+        let client = self
+            .rvps_client
             .as_ref()
             .ok_or_else(|| anyhow!("RVPS is not configured"))?;
 
-        let mut certs_map = read_rvps_certs_map(addr).await?;
+        let mut certs_map = read_rvps_certs_map(client.as_ref()).await?;
 
         if let Some(certs) = certs_map.get_mut(&auth_key_digest) {
             if !certs.contains(&client_cert) {
@@ -129,7 +139,7 @@ impl SigningPolicyHandler {
                 certs_map.remove(&auth_key_digest);
             }
             let message = build_rvps_message(&certs_map)?;
-            reference_value_provider_service::client::register(addr.clone(), message).await?;
+            client.register(message).await?;
         }
 
         Ok(b"{}".to_vec())

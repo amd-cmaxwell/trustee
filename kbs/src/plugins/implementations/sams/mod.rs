@@ -10,11 +10,12 @@ use actix_web::http::header::HeaderMap;
 use actix_web::http::Method;
 use anyhow::{bail, Result};
 use kbs_types::Tee;
-use key_value_storage::StorageProvider;
+use key_value_storage::{KeyValueStorageType, StorageProvider};
 use openssl::ec::EcKey;
 use openssl::pkey::Private;
 use policy_engine::policy::rego::Regorus;
 use policy_engine::PolicyEngine;
+use reference_value_provider_service::{Rvps, REFERENCE_VALUE_STORAGE_NAMESPACE};
 use serde::Deserialize;
 use sev::measurement::idblock::load_priv_key;
 
@@ -24,19 +25,33 @@ mod api;
 use api::RequestHandler;
 mod backend;
 use backend::signing::SigningPolicyHandler;
+pub mod rvps_client;
+use rvps_client::{BuiltinRvpsClient, GrpcRvpsClient, RvpsClient};
+
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+#[serde(tag = "type")]
+pub enum SamsRvpsConfig {
+    Grpc {
+        address: String,
+    },
+    Builtin {
+        #[serde(default)]
+        storage_type: Option<KeyValueStorageType>,
+    },
+}
 
 #[derive(Deserialize, Clone, Debug, PartialEq)]
 pub struct SamsConfig {
     pub ovmf_file: PathBuf,
     pub id_key_file: PathBuf,
     #[serde(default)]
-    pub rvps_address: Option<String>,
+    pub rvps: Option<SamsRvpsConfig>,
 }
 
 pub struct Sams {
     ovmf_file: PathBuf,
     id_key: EcKey<Private>,
-    rvps_address: Option<String>,
+    rvps_client: Option<Arc<dyn RvpsClient>>,
     auth_policy_engine: PolicyEngine<Regorus>,
     signing_policy_engine: PolicyEngine<Regorus>,
     storage: Arc<dyn key_value_storage::KeyValueStorage>,
@@ -54,10 +69,24 @@ impl Sams {
         let policy_engine = PolicyEngine::<Regorus>::new(storage.clone());
         let signing_policy_engine = PolicyEngine::<Regorus>::new(signing_policy_storage);
         let id_key = load_priv_key(config.id_key_file)?;
+
+        let rvps_client: Option<Arc<dyn RvpsClient>> = match config.rvps {
+            Some(SamsRvpsConfig::Grpc { address }) => Some(Arc::new(GrpcRvpsClient::new(address))),
+            Some(SamsRvpsConfig::Builtin { storage_type }) => {
+                let storage_type = storage_type.unwrap_or(KeyValueStorageType::LocalFs);
+                let rvps_storage = storage_provider
+                    .get_or_register_with_type(REFERENCE_VALUE_STORAGE_NAMESPACE, storage_type)
+                    .await?;
+                let rvps = Rvps::new_with_storage(None, rvps_storage).await?;
+                Some(Arc::new(BuiltinRvpsClient::new(rvps)))
+            }
+            None => None,
+        };
+
         Ok(Self {
             ovmf_file: config.ovmf_file,
             id_key,
-            rvps_address: config.rvps_address,
+            rvps_client,
             auth_policy_engine: policy_engine,
             signing_policy_engine,
             storage,
@@ -87,7 +116,7 @@ impl Sams {
             &self.ovmf_file,
             self.id_key.clone(),
             is_auth,
-            self.rvps_address.clone(),
+            self.rvps_client.clone(),
             self.auth_policy_engine.clone(),
             self.signing_policy_engine.clone(),
             self.storage.clone(),
@@ -145,21 +174,21 @@ impl ClientPlugin for Sams {
             ("POST", ["signing", "policy"]) => {
                 let handler = SigningPolicyHandler::new(
                     self.signing_policy_engine.clone(),
-                    self.rvps_address.clone(),
+                    self.rvps_client.clone(),
                 );
                 handler.register_signing_policy(headers, body).await
             }
             ("DELETE", ["signing", "policy"]) => {
                 let handler = SigningPolicyHandler::new(
                     self.signing_policy_engine.clone(),
-                    self.rvps_address.clone(),
+                    self.rvps_client.clone(),
                 );
                 handler.revoke_signing_policy(headers).await
             }
             ("DELETE", ["signing", "key", digest]) => {
                 let handler = SigningPolicyHandler::new(
                     self.signing_policy_engine.clone(),
-                    self.rvps_address.clone(),
+                    self.rvps_client.clone(),
                 );
                 handler.revoke_signing_key(headers, digest).await
             }

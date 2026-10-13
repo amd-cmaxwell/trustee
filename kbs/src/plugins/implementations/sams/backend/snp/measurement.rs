@@ -6,6 +6,7 @@ use std::sync::Arc;
 use actix_web::http::header::HeaderMap;
 use anyhow::{anyhow, Context, Result};
 
+use crate::plugins::implementations::sams::rvps_client::RvpsClient;
 use crate::plugins::plugin_manager::PluginHttpError;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use key_value_storage::KeyValueStorage;
@@ -127,12 +128,8 @@ pub fn build_rvps_message(certs_map: &HashMap<String, Vec<String>>) -> Result<St
     Ok(serde_json::to_string(&message)?)
 }
 
-pub async fn read_rvps_certs_map(addr: &str) -> Result<HashMap<String, Vec<String>>> {
-    let result = reference_value_provider_service::client::query(
-        addr.to_string(),
-        RVPS_GUEST_OWNER_CERTS_KEY.to_string(),
-    )
-    .await?;
+pub async fn read_rvps_certs_map(client: &dyn RvpsClient) -> Result<HashMap<String, Vec<String>>> {
+    let result = client.query(RVPS_GUEST_OWNER_CERTS_KEY.to_string()).await?;
 
     match result {
         Some(json_str) => {
@@ -147,7 +144,7 @@ pub struct MeasurementHandler {
     ovmf_file: PathBuf,
     id_key: EcKey<Private>,
     is_auth: bool,
-    rvps_address: Option<String>,
+    rvps_client: Option<Arc<dyn RvpsClient>>,
     auth_policy_engine: PolicyEngine<Regorus>,
     signing_policy_engine: PolicyEngine<Regorus>,
     storage: Arc<dyn KeyValueStorage>,
@@ -158,7 +155,7 @@ impl MeasurementHandler {
         ovmf_file: PathBuf,
         id_key: EcKey<Private>,
         is_auth: bool,
-        rvps_address: Option<String>,
+        rvps_client: Option<Arc<dyn RvpsClient>>,
         auth_policy_engine: PolicyEngine<Regorus>,
         signing_policy_engine: PolicyEngine<Regorus>,
         storage: Arc<dyn KeyValueStorage>,
@@ -167,7 +164,7 @@ impl MeasurementHandler {
             ovmf_file,
             id_key,
             is_auth,
-            rvps_address,
+            rvps_client,
             auth_policy_engine,
             signing_policy_engine,
             storage,
@@ -257,8 +254,8 @@ impl RequestHandler for MeasurementHandler {
                 let input = serde_json::to_string(&input_value)?;
 
                 let mut extensions = vec![];
-                if let Some(addr) = &self.rvps_address {
-                    let addr = addr.clone();
+                if let Some(client) = &self.rvps_client {
+                    let client = client.clone();
                     let extension = RegorusExtension {
                         name: "query_reference_value".to_string(),
                         id: 1,
@@ -269,10 +266,9 @@ impl RequestHandler for MeasurementHandler {
                             let id = param.as_string().map(|s| s.to_string()).map_err(|_| {
                                 anyhow!("query_reference_value parameter must be a string")
                             })?;
-                            let addr = addr.clone();
-                            let result = tokio::runtime::Handle::current().block_on(async {
-                                reference_value_provider_service::client::query(addr, id).await
-                            })?;
+                            let client = client.clone();
+                            let result = tokio::runtime::Handle::current()
+                                .block_on(async { client.query(id).await })?;
                             match result {
                                 Some(v) => Ok(serde_json::from_str::<regorus::Value>(&v)?),
                                 None => Ok(regorus::Value::Null),
@@ -391,16 +387,15 @@ impl RequestHandler for MeasurementHandler {
                         .map_err(|e| anyhow!("failed to serialize guest-owner public key: {e}"))?;
                     author_key_b64 = Some(STANDARD.encode(guest_owner_pub_key_bytes.as_ref()));
 
-                    if let Some(addr) = &self.rvps_address {
+                    if let Some(client) = &self.rvps_client {
                         let auth_key_digest = compute_auth_key_digest(&signing_keys.privkey_pem)?;
-                        let mut certs_map = read_rvps_certs_map(addr).await?;
+                        let mut certs_map = read_rvps_certs_map(client.as_ref()).await?;
                         let certs = certs_map.entry(auth_key_digest).or_default();
                         if !certs.contains(cert) {
                             certs.push(cert.clone());
                         }
                         let message = build_rvps_message(&certs_map)?;
-                        reference_value_provider_service::client::register(addr.clone(), message)
-                            .await?;
+                        client.register(message).await?;
                     }
                 }
 
