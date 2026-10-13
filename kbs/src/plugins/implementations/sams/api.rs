@@ -12,6 +12,7 @@ use policy_engine::PolicyEngine;
 
 use super::backend::authorization::AuthorizationPolicyHandler;
 use super::backend::snp::measurement::MeasurementHandler as SnpMeasurementHandler;
+use super::rvps_client::RvpsClient;
 
 #[async_trait::async_trait]
 pub trait RequestHandler: Send {
@@ -38,7 +39,7 @@ pub fn get_request_handler(
     ovmf_file: &Path,
     id_key: EcKey<Private>,
     is_auth: bool,
-    rvps_address: Option<String>,
+    rvps_client: Option<Arc<dyn RvpsClient>>,
     auth_policy_engine: PolicyEngine<Regorus>,
     signing_policy_engine: PolicyEngine<Regorus>,
     storage: Arc<dyn KeyValueStorage>,
@@ -48,7 +49,7 @@ pub fn get_request_handler(
             ovmf_file.to_path_buf(),
             id_key,
             is_auth,
-            rvps_address,
+            rvps_client,
             auth_policy_engine,
             signing_policy_engine,
             storage,
