@@ -25,6 +25,7 @@ use sev::measurement::snp::{snp_calc_launch_digest, SnpMeasurementArgs};
 use sev::measurement::vcpu_types::CpuType;
 use sev::measurement::vmsa::{GuestFeatures, VMMType};
 use sev::parser::ByteParser;
+use tokio::sync::Mutex;
 
 use super::super::super::api::RequestHandler;
 use super::super::authorization::{AUTH_POLICY_ID, MAGS_KEY};
@@ -145,17 +146,20 @@ pub struct MeasurementHandler {
     id_key: EcKey<Private>,
     is_auth: bool,
     rvps_client: Option<Arc<dyn RvpsClient>>,
+    rvps_certs_lock: Arc<Mutex<()>>,
     auth_policy_engine: PolicyEngine<Regorus>,
     signing_policy_engine: PolicyEngine<Regorus>,
     storage: Arc<dyn KeyValueStorage>,
 }
 
 impl MeasurementHandler {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         ovmf_file: PathBuf,
         id_key: EcKey<Private>,
         is_auth: bool,
         rvps_client: Option<Arc<dyn RvpsClient>>,
+        rvps_certs_lock: Arc<Mutex<()>>,
         auth_policy_engine: PolicyEngine<Regorus>,
         signing_policy_engine: PolicyEngine<Regorus>,
         storage: Arc<dyn KeyValueStorage>,
@@ -165,6 +169,7 @@ impl MeasurementHandler {
             id_key,
             is_auth,
             rvps_client,
+            rvps_certs_lock,
             auth_policy_engine,
             signing_policy_engine,
             storage,
@@ -388,6 +393,7 @@ impl RequestHandler for MeasurementHandler {
                     author_key_b64 = Some(STANDARD.encode(guest_owner_pub_key_bytes.as_ref()));
 
                     if let Some(client) = &self.rvps_client {
+                        let _guard = self.rvps_certs_lock.lock().await;
                         let auth_key_digest = compute_auth_key_digest(&signing_keys.privkey_pem)?;
                         let mut certs_map = read_rvps_certs_map(client.as_ref()).await?;
                         let certs = certs_map.entry(auth_key_digest).or_default();

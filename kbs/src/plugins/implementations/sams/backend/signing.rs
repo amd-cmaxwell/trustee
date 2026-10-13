@@ -8,6 +8,8 @@ use policy_engine::policy::rego::Regorus;
 use policy_engine::PolicyEngine;
 use serde::Deserialize;
 
+use tokio::sync::Mutex;
+
 use crate::plugins::implementations::sams::rvps_client::RvpsClient;
 use crate::plugins::plugin_manager::PluginHttpError;
 
@@ -42,16 +44,19 @@ pub fn hash_cert(data: &str) -> String {
 pub struct SigningPolicyHandler {
     signing_policy_engine: PolicyEngine<Regorus>,
     rvps_client: Option<Arc<dyn RvpsClient>>,
+    rvps_certs_lock: Arc<Mutex<()>>,
 }
 
 impl SigningPolicyHandler {
     pub fn new(
         signing_policy_engine: PolicyEngine<Regorus>,
         rvps_client: Option<Arc<dyn RvpsClient>>,
+        rvps_certs_lock: Arc<Mutex<()>>,
     ) -> Self {
         Self {
             signing_policy_engine,
             rvps_client,
+            rvps_certs_lock,
         }
     }
 
@@ -94,6 +99,7 @@ impl SigningPolicyHandler {
             .map_err(|e| anyhow!("failed to delete signing policy: {e}"))?;
 
         if let Some(client) = &self.rvps_client {
+            let _guard = self.rvps_certs_lock.lock().await;
             let mut certs_map = read_rvps_certs_map(client.as_ref()).await?;
             for certs in certs_map.values_mut() {
                 certs.retain(|c| c != &client_cert);
@@ -125,6 +131,7 @@ impl SigningPolicyHandler {
             .as_ref()
             .ok_or_else(|| anyhow!("RVPS is not configured"))?;
 
+        let _guard = self.rvps_certs_lock.lock().await;
         let mut certs_map = read_rvps_certs_map(client.as_ref()).await?;
 
         if let Some(certs) = certs_map.get_mut(&auth_key_digest) {

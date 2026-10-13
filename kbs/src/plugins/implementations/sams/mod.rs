@@ -18,6 +18,7 @@ use policy_engine::PolicyEngine;
 use reference_value_provider_service::{Rvps, REFERENCE_VALUE_STORAGE_NAMESPACE};
 use serde::Deserialize;
 use sev::measurement::idblock::load_priv_key;
+use tokio::sync::Mutex;
 
 use super::super::plugin_manager::{AuthMode, ClientPlugin};
 
@@ -52,6 +53,8 @@ pub struct Sams {
     ovmf_file: PathBuf,
     id_key: EcKey<Private>,
     rvps_client: Option<Arc<dyn RvpsClient>>,
+    rvps_certs_lock: Arc<Mutex<()>>,
+    mags_lock: Arc<Mutex<()>>,
     auth_policy_engine: PolicyEngine<Regorus>,
     signing_policy_engine: PolicyEngine<Regorus>,
     storage: Arc<dyn key_value_storage::KeyValueStorage>,
@@ -87,6 +90,8 @@ impl Sams {
             ovmf_file: config.ovmf_file,
             id_key,
             rvps_client,
+            rvps_certs_lock: Arc::new(Mutex::new(())),
+            mags_lock: Arc::new(Mutex::new(())),
             auth_policy_engine: policy_engine,
             signing_policy_engine,
             storage,
@@ -117,6 +122,7 @@ impl Sams {
             self.id_key.clone(),
             is_auth,
             self.rvps_client.clone(),
+            self.rvps_certs_lock.clone(),
             self.auth_policy_engine.clone(),
             self.signing_policy_engine.clone(),
             self.storage.clone(),
@@ -147,6 +153,7 @@ impl ClientPlugin for Sams {
                 let mut handler = api::get_auth_policy_handler(
                     self.auth_policy_engine.clone(),
                     self.storage.clone(),
+                    self.mags_lock.clone(),
                 );
                 handler.handle(body, &empty_headers).await
             }
@@ -175,6 +182,7 @@ impl ClientPlugin for Sams {
                 let handler = SigningPolicyHandler::new(
                     self.signing_policy_engine.clone(),
                     self.rvps_client.clone(),
+                    self.rvps_certs_lock.clone(),
                 );
                 handler.register_signing_policy(headers, body).await
             }
@@ -182,6 +190,7 @@ impl ClientPlugin for Sams {
                 let handler = SigningPolicyHandler::new(
                     self.signing_policy_engine.clone(),
                     self.rvps_client.clone(),
+                    self.rvps_certs_lock.clone(),
                 );
                 handler.revoke_signing_policy(headers).await
             }
@@ -189,6 +198,7 @@ impl ClientPlugin for Sams {
                 let handler = SigningPolicyHandler::new(
                     self.signing_policy_engine.clone(),
                     self.rvps_client.clone(),
+                    self.rvps_certs_lock.clone(),
                 );
                 handler.revoke_signing_key(headers, digest).await
             }

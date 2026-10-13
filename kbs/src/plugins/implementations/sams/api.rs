@@ -9,6 +9,7 @@ use openssl::ec::EcKey;
 use openssl::pkey::Private;
 use policy_engine::policy::rego::Regorus;
 use policy_engine::PolicyEngine;
+use tokio::sync::Mutex;
 
 use super::backend::authorization::AuthorizationPolicyHandler;
 use super::backend::snp::measurement::MeasurementHandler as SnpMeasurementHandler;
@@ -40,6 +41,7 @@ pub fn get_request_handler(
     id_key: EcKey<Private>,
     is_auth: bool,
     rvps_client: Option<Arc<dyn RvpsClient>>,
+    rvps_certs_lock: Arc<Mutex<()>>,
     auth_policy_engine: PolicyEngine<Regorus>,
     signing_policy_engine: PolicyEngine<Regorus>,
     storage: Arc<dyn KeyValueStorage>,
@@ -50,6 +52,7 @@ pub fn get_request_handler(
             id_key,
             is_auth,
             rvps_client,
+            rvps_certs_lock,
             auth_policy_engine,
             signing_policy_engine,
             storage,
@@ -62,6 +65,7 @@ pub fn get_request_handler(
 pub fn get_auth_policy_handler(
     policy_engine: PolicyEngine<Regorus>,
     storage: Arc<dyn KeyValueStorage>,
+    mags_lock: Arc<Mutex<()>>,
 ) -> AuthorizationPolicyHandler {
-    AuthorizationPolicyHandler::new(policy_engine, storage)
+    AuthorizationPolicyHandler::new(policy_engine, storage, mags_lock)
 }

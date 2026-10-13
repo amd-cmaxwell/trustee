@@ -6,6 +6,7 @@ use key_value_storage::{KeyValueStorage, SetParameters};
 use policy_engine::policy::rego::Regorus;
 use policy_engine::PolicyEngine;
 use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex;
 
 use super::super::api::RequestHandler;
 
@@ -27,13 +28,19 @@ pub struct AuthorizationPolicyResponse {
 pub struct AuthorizationPolicyHandler {
     policy_engine: PolicyEngine<Regorus>,
     storage: Arc<dyn KeyValueStorage>,
+    mags_lock: Arc<Mutex<()>>,
 }
 
 impl AuthorizationPolicyHandler {
-    pub fn new(policy_engine: PolicyEngine<Regorus>, storage: Arc<dyn KeyValueStorage>) -> Self {
+    pub fn new(
+        policy_engine: PolicyEngine<Regorus>,
+        storage: Arc<dyn KeyValueStorage>,
+        mags_lock: Arc<Mutex<()>>,
+    ) -> Self {
         Self {
             policy_engine,
             storage,
+            mags_lock,
         }
     }
 }
@@ -76,12 +83,14 @@ impl RequestHandler for AuthorizationPolicyHandler {
             .set_policy(AUTH_POLICY_ID, &rego, true)
             .await?;
 
-        if req.incr_gsvn {
-            let current = read_mags(&*self.storage).await?;
-            write_mags(&*self.storage, current + 1).await?;
-        }
-
-        let gsvn = read_mags(&*self.storage).await?;
+        let gsvn = {
+            let _guard = self.mags_lock.lock().await;
+            if req.incr_gsvn {
+                let current = read_mags(&*self.storage).await?;
+                write_mags(&*self.storage, current + 1).await?;
+            }
+            read_mags(&*self.storage).await?
+        };
         let resp = AuthorizationPolicyResponse { gsvn };
         Ok(serde_json::to_vec(&resp)?)
     }
