@@ -1,3 +1,5 @@
+pub mod auth;
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -12,13 +14,11 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use key_value_storage::KeyValueStorage;
 use openssl::ec::EcKey;
 use openssl::pkey::Private;
-use openssl::x509::X509;
 use policy_engine::policy::rego::Regorus;
 use policy_engine::policy::rego::RegorusExtension;
 use policy_engine::PolicyEngine;
 use serde::{Deserialize, Serialize};
 use sev::firmware::guest::GuestPolicy;
-use sev::measurement::idblock::get_key_digest;
 use sev::measurement::idblock_types::{
     FamilyId, IdAuth, IdBlock, ImageId, SevEcdsaPubKey, DEFAULT_KEY_ALGO,
 };
@@ -30,11 +30,13 @@ use tokio::sync::Mutex;
 
 use super::super::super::api::RequestHandler;
 use super::super::authorization::{AUTH_POLICY_ID, MAGS_KEY};
-use super::super::signing::{hash_cert, signing_policy_id};
+use super::super::signing::hash_cert;
 
-const AUTH_POLICY_RULE: &str = "data.policy.authorized";
-const SIGNING_POLICY_PUBKEY_RULE: &str = "data.policy.pubkey";
-const SIGNING_POLICY_PRIVKEY_RULE: &str = "data.policy.privkey";
+use auth::{
+    compute_auth_key_digest, evaluate_signing_policy, extract_guest_owner_cert, parse_x509_to_json,
+    AUTH_POLICY_RULE,
+};
+
 const RVPS_GUEST_OWNER_CERTS_KEY: &str = "guest-owner-certs";
 const RVPS_GUEST_OWNER_PUBKEYS_KEY: &str = "guest-owner-pubkeys";
 
@@ -90,36 +92,6 @@ async fn read_mags(storage: &dyn KeyValueStorage) -> Result<u32> {
     }
 }
 
-#[derive(Deserialize)]
-struct GuestOwnerJwtClaims {
-    certificate: String,
-}
-
-fn extract_guest_owner_cert(headers: &HeaderMap) -> Option<String> {
-    let auth_value = headers.get("authorization")?.to_str().ok()?;
-    let jwt = auth_value.strip_prefix("Bearer ")?;
-    let parts: Vec<&str> = jwt.split('.').collect();
-    let payload_b64 = parts.get(1)?;
-    let payload_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(payload_b64)
-        .ok()?;
-    let claims: GuestOwnerJwtClaims = serde_json::from_slice(&payload_bytes).ok()?;
-    Some(claims.certificate)
-}
-
-fn compute_auth_key_digest(privkey_pem: &str) -> Result<String> {
-    let ec_key = EcKey::private_key_from_pem(privkey_pem.as_bytes())
-        .map_err(|e| anyhow!("invalid guest-owner private key: {e}"))?;
-    let sev_pub_key = SevEcdsaPubKey::try_from(&ec_key)
-        .map_err(|e| anyhow!("failed to convert to SevEcdsaPubKey: {e}"))?;
-    let digest =
-        get_key_digest(sev_pub_key).map_err(|e| anyhow!("failed to compute AuthKeyDigest: {e}"))?;
-    let digest_bytes = digest
-        .to_bytes()
-        .map_err(|e| anyhow!("failed to serialize AuthKeyDigest: {e}"))?;
-    Ok(hex::encode(digest_bytes))
-}
-
 pub fn build_rvps_message(certs_map: &HashMap<String, Vec<String>>) -> Result<String> {
     let payload = serde_json::json!({ RVPS_GUEST_OWNER_CERTS_KEY: certs_map });
     let payload_b64 = STANDARD.encode(serde_json::to_vec(&payload)?);
@@ -168,62 +140,6 @@ pub async fn read_rvps_pubkeys_map(client: &dyn RvpsClient) -> Result<HashMap<St
     }
 }
 
-fn x509_name_to_json(name: &openssl::x509::X509NameRef) -> serde_json::Value {
-    let mut map = serde_json::Map::new();
-    for entry in name.entries() {
-        let key = entry.object().nid().short_name().unwrap_or("unknown");
-        let val = entry.data().to_string().unwrap_or_default();
-        map.insert(key.to_string(), serde_json::Value::String(val));
-    }
-    serde_json::Value::Object(map)
-}
-
-fn parse_x509_to_json(pem: &str) -> Result<serde_json::Value> {
-    let cert = X509::from_pem(pem.as_bytes()).context("failed to parse guest-owner cert PEM")?;
-    let subject = x509_name_to_json(cert.subject_name());
-    let issuer = x509_name_to_json(cert.issuer_name());
-    let serial = cert
-        .serial_number()
-        .to_bn()
-        .map(|bn| bn.to_hex_str().map(|s| s.to_string()))
-        .ok()
-        .and_then(|r| r.ok())
-        .unwrap_or_default();
-    let not_before = cert.not_before().to_string();
-    let not_after = cert.not_after().to_string();
-
-    let mut extensions = serde_json::Map::new();
-    if let Some(san) = cert.subject_alt_names() {
-        let names: Vec<String> = san
-            .iter()
-            .filter_map(|n| {
-                n.dnsname()
-                    .map(String::from)
-                    .or_else(|| n.email().map(String::from))
-                    .or_else(|| n.uri().map(String::from))
-                    .or_else(|| n.ipaddress().map(|ip| format!("{ip:?}")))
-            })
-            .collect();
-        if !names.is_empty() {
-            extensions.insert(
-                "subject_alt_names".to_string(),
-                serde_json::Value::Array(
-                    names.into_iter().map(serde_json::Value::String).collect(),
-                ),
-            );
-        }
-    }
-
-    Ok(serde_json::json!({
-        "subject": subject,
-        "issuer": issuer,
-        "serial": serial,
-        "not_before": not_before,
-        "not_after": not_after,
-        "extensions": extensions,
-    }))
-}
-
 pub struct MeasurementHandler {
     ovmf_file: PathBuf,
     id_key: EcKey<Private>,
@@ -258,60 +174,6 @@ impl MeasurementHandler {
             storage,
         }
     }
-}
-
-struct SigningKeys {
-    privkey: EcKey<Private>,
-    privkey_pem: String,
-}
-
-async fn evaluate_signing_policy(
-    signing_policy_engine: &PolicyEngine<Regorus>,
-    cert_hash: &str,
-    input: &str,
-) -> Result<SigningKeys> {
-    let policy_id = signing_policy_id(cert_hash);
-    let policy = signing_policy_engine
-        .get_policy(&policy_id)
-        .await
-        .map_err(|_| {
-            PluginHttpError::unauthorized("guest-owner signing policy not found in SAMS")
-        })?;
-
-    let result = signing_policy_engine
-        .engine
-        .evaluate(
-            None,
-            input.to_string(),
-            policy,
-            vec![
-                SIGNING_POLICY_PUBKEY_RULE.to_string(),
-                SIGNING_POLICY_PRIVKEY_RULE.to_string(),
-            ],
-            vec![],
-        )
-        .await
-        .map_err(|e| anyhow!("signing policy evaluation failed: {e}"))?;
-
-    let privkey_pem = result
-        .eval_rules_result
-        .get(SIGNING_POLICY_PRIVKEY_RULE)
-        .and_then(|v| v.as_ref())
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            PluginHttpError::forbidden(
-                "signing policy did not produce a valid privkey for these launch params",
-            )
-        })?
-        .to_string();
-
-    let privkey = EcKey::private_key_from_pem(privkey_pem.as_bytes())
-        .map_err(|e| anyhow!("signing policy produced an invalid private key PEM: {e}"))?;
-
-    Ok(SigningKeys {
-        privkey,
-        privkey_pem,
-    })
 }
 
 #[async_trait::async_trait]
