@@ -30,8 +30,12 @@ CVM boots ──> RCAR handshake          CVM boots ──> RCAR handshake
   (same)                                (same, but report carries
                                          IDBlock/IDAuth fields)
 AS verifies report                    AS verifies report
-  measurement vs RVPS blobs             + IDKeyDigest (Trustee key)
-                                        + AuthKeyDigest (owner key)
+  measurement vs RVPS blobs             broker checks IDKeyDigest
+                                          against SAMS pubkey in RVPS
+                                        broker checks AuthKeyDigest
+                                          against owner pubkeys in RVPS
+                                        policy sees endorsed flags
+                                          + guest_svn, family_id, ...
                                       ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄
 Secret release (same)                 Secret release (same)
 ```
@@ -47,8 +51,8 @@ a misconfigured guest never reaches the attestation phase.
 | **Verification timing** | After boot only | Before boot (firmware) **and** after boot |
 | **Measurement computation** | Offline by admin, uploaded to RVPS | Server-side by SAMS from launch params |
 | **ID Block** | Not used | SAMS signs it; firmware enforces at boot |
-| **Trustee endorsement** | Not in report | IDKeyDigest = SAMS key hash, checked via RVPS |
-| **Guest-owner identity** | Not in report | AuthKeyDigest = owner key hash, certs in RVPS |
+| **Trustee endorsement** | Not in report | IDKeyDigest = SAMS key hash; broker verifies against RVPS and injects `sams_id_key_endorsed` |
+| **Guest-owner identity** | Not in report | AuthKeyDigest = owner key hash; broker verifies against RVPS and injects `author_key_endorsed`; certs available for policy assertions |
 | **Bad config at boot** | Boots, fails attestation later | Fails to boot |
 
 ## New Concepts
@@ -72,8 +76,12 @@ All under `/kbs/v0/sams/`. Guest-owner endpoints use mTLS.
 
 ## What Does Not Change
 
-RCAR protocol, Attestation Service pipeline, KBS resource policy engine,
-existing RVPS categories, CDH / guest-components.
+RCAR protocol, KBS resource policy engine, CDH / guest-components.
+
+> **Note:** The SNP verifier now emits additional claims (`id_key_digest`,
+> `author_key_digest`, `family_id`, `image_id`, `guest_svn`) and the EAR token
+> broker performs key endorsement checks before policy evaluation. These are
+> additive — existing policies and flows are unaffected.
 
 ## Use w/ Kata-CoCo
 Guest Owners who wish to run confidential workloads with pre-verification should:

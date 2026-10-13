@@ -123,10 +123,15 @@ Doing so will trigger SAMS to evaluate the Guest Owner's signing-policy and use 
             - The IDKey (SAMS' Public Key)
             - The AuthorKey (Guest Owner's Public Key, as selected by the signing-policy)
         9. **Append the guest-owner's mTLS cert to the RVPS `"guest-owner-certs"` list** for the AuthKeyDigest of the policy-selected key (multiple guest-owners sharing a signing key are stored as separate entries under the same digest)
+        10. **Store the guest-owner's public signing key in the RVPS `"guest-owner-pubkeys"` map**, keyed by AuthKeyDigest (so verifiers can retrieve the full public key from the digest in the attestation report)
         
 ### Verifying an Attestation Report
-- Verifier Policy Owners will be able to look up Guest Owner client certs from RVPS and make assertions about them in Verifier policies.
-- Verifiers can find the certificates for a guest owner using the Rego expression: `query_reference_value("guest-owner-certs")[<AuthKeyDigest>]` where `<AuthKeyDigest>` is the AuthKeyDigest field from the attestation report. This returns a **list** of certificates (multiple guest-owners may share a signing key).
+- The SNP verifier now emits `id_key_digest`, `author_key_digest`, `author_key_en`, `family_id`, `image_id`, and `guest_svn` as claims from the attestation report.
+- Before policy evaluation, the EAR token broker automatically verifies key endorsement:
+    - It retrieves the SAMS IDKey public key from RVPS (`"sams-id-key"`), computes its SHA-384 digest, and compares it against the report's `id_key_digest`. The result is injected as a `sams_id_key_endorsed` boolean claim.
+    - If `author_key_en` is true, the broker checks whether `author_key_digest` exists as a key in the RVPS `"guest-owner-pubkeys"` map. The result is injected as an `author_key_endorsed` boolean claim.
+- Verifier Policy Owners can use `sams_id_key_endorsed` and `author_key_endorsed` in their policies to set trust claims accordingly.
+- Verifier policies can also look up Guest Owner client certs from RVPS using the Rego expression: `query_reference_value("guest-owner-certs")[<AuthKeyDigest>]` where `<AuthKeyDigest>` is the AuthKeyDigest field from the attestation report. This returns a **list** of certificates (multiple guest-owners may share a signing key).
     - This allows Verifier policies to make assertions about all the data contained inside the Guest Owner's client certificates, including but not limited to the contents of the `Subject` & `Extensions` fields.
 
 ### Guest Owner Revocation
@@ -162,7 +167,8 @@ Guest Owners can revoke their signing-policy and all associated RVPS endorsement
         2. Looks up the RVPS `"guest-owner-certs"` list for that AuthKeyDigest
         3. If found, verifies the caller's mTLS cert is in the list (returns `403` if not present)
         4. Removes the caller's cert from the list, dropping the AuthKeyDigest entry if the list becomes empty
-        5. Returns `200 OK` (idempotent: deleting a non-existent key also returns `200`)
+        5. If the AuthKeyDigest entry was fully removed, also removes the corresponding entry from `"guest-owner-pubkeys"` in RVPS
+        6. Returns `200 OK` (idempotent: deleting a non-existent key also returns `200`)
 
 ## Additional Overhead
 ### For Trustee Admins

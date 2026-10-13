@@ -8,7 +8,8 @@ use std::sync::Arc;
 
 use actix_web::http::header::HeaderMap;
 use actix_web::http::Method;
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
+use base64::{engine::general_purpose::STANDARD, Engine};
 use kbs_types::Tee;
 use key_value_storage::{KeyValueStorageType, StorageProvider};
 use openssl::ec::EcKey;
@@ -18,6 +19,8 @@ use policy_engine::PolicyEngine;
 use reference_value_provider_service::{Rvps, REFERENCE_VALUE_STORAGE_NAMESPACE};
 use serde::Deserialize;
 use sev::measurement::idblock::load_priv_key;
+use sev::measurement::idblock_types::SevEcdsaPubKey;
+use sev::parser::ByteParser;
 use tokio::sync::Mutex;
 
 use super::super::plugin_manager::{AuthMode, ClientPlugin};
@@ -85,6 +88,24 @@ impl Sams {
             }
             None => None,
         };
+
+        if let Some(client) = &rvps_client {
+            let pub_key = SevEcdsaPubKey::try_from(&id_key)
+                .map_err(|e| anyhow!("failed to extract SAMS public key: {e}"))?;
+            let key_bytes = pub_key
+                .to_bytes()
+                .map_err(|e| anyhow!("failed to serialize SAMS public key: {e}"))?;
+            let key_b64 = STANDARD.encode(key_bytes.as_ref());
+
+            let payload = serde_json::json!({ "sams-id-key": key_b64 });
+            let payload_b64 = STANDARD.encode(serde_json::to_vec(&payload)?);
+            let message = serde_json::json!({
+                "version": "0.1.0",
+                "payload": payload_b64,
+                "type": "sample"
+            });
+            client.register(serde_json::to_string(&message)?).await?;
+        }
 
         Ok(Self {
             ovmf_file: config.ovmf_file,

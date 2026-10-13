@@ -13,7 +13,9 @@ use tokio::sync::Mutex;
 use crate::plugins::implementations::sams::rvps_client::RvpsClient;
 use crate::plugins::plugin_manager::PluginHttpError;
 
-use super::snp::measurement::{build_rvps_message, read_rvps_certs_map};
+use super::snp::measurement::{
+    build_rvps_message, build_rvps_pubkeys_message, read_rvps_certs_map, read_rvps_pubkeys_map,
+};
 
 const CLIENT_CERT_HEADER: &str = "x-client-cert";
 const SIGNING_POLICY_PREFIX: &str = "signing-policy-";
@@ -142,11 +144,19 @@ impl SigningPolicyHandler {
             }
 
             certs.retain(|c| c != &client_cert);
-            if certs.is_empty() {
+            let key_fully_revoked = certs.is_empty();
+            if key_fully_revoked {
                 certs_map.remove(&auth_key_digest);
             }
             let message = build_rvps_message(&certs_map)?;
             client.register(message).await?;
+
+            if key_fully_revoked {
+                let mut pubkeys_map = read_rvps_pubkeys_map(client.as_ref()).await?;
+                pubkeys_map.remove(&auth_key_digest);
+                let message = build_rvps_pubkeys_message(&pubkeys_map)?;
+                client.register(message).await?;
+            }
         }
 
         Ok(b"{}".to_vec())

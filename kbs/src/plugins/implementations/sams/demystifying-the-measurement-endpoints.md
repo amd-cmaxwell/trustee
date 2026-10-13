@@ -140,7 +140,9 @@ SAMS evaluates the guest-owner's **signing-policy** with the launch params as in
             "author-key": "<Guest Owner Public Key (selected by signing-policy)>"
         }
         ```
-    Additionally, SAMS appends the guest-owner's mTLS certificate to the RVPS `"guest-owner-certs"` list for the AuthKeyDigest of the policy-selected key. Multiple guest-owners sharing a signing key are stored as separate entries under the same digest.
+    Additionally, SAMS:
+    - Appends the guest-owner's mTLS certificate to the RVPS `"guest-owner-certs"` list for the AuthKeyDigest of the policy-selected key. Multiple guest-owners sharing a signing key are stored as separate entries under the same digest.
+    - Stores the guest-owner's public signing key in the RVPS `"guest-owner-pubkeys"` map, keyed by AuthKeyDigest, so that verifiers can retrieve the full public key using the digest from the attestation report.
     - Error Codes:
         1. If you fail to provide the minimum set of Launch Params to calculate a measurement:
             `400 - Bad Request`

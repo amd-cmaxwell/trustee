@@ -1,5 +1,5 @@
-- Currently we need to include the URI to the RSVP in the SAMS Plugin section of the KBS Config file
-    - Should we do something about that?
+- ~~Currently we need to include the URI to the RVPS in the SAMS Plugin section of the KBS Config file~~
+    - **Resolved:** SAMS now supports both `Grpc` (remote RVPS address) and `Builtin` (in-process RVPS) modes via the `SamsRvpsConfig` enum. RVPS config is optional; omitting it disables RVPS features.
 - Currently we need to include the path to a base OVMF file in the SAMS Plugin section of the KBS Config file, which SAMS will use to calculate launch measurements. 
     - Need to investigate supply chain for such an OVMF file
         - Maybe we package an OVMF into the KBS image every trustee release?

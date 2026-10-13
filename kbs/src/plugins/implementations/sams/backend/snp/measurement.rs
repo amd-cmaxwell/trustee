@@ -35,6 +35,7 @@ const AUTH_POLICY_RULE: &str = "data.policy.authorized";
 const SIGNING_POLICY_PUBKEY_RULE: &str = "data.policy.pubkey";
 const SIGNING_POLICY_PRIVKEY_RULE: &str = "data.policy.privkey";
 const RVPS_GUEST_OWNER_CERTS_KEY: &str = "guest-owner-certs";
+const RVPS_GUEST_OWNER_PUBKEYS_KEY: &str = "guest-owner-pubkeys";
 
 #[derive(Deserialize, Serialize)]
 pub struct SnpMeasurementRequest {
@@ -135,6 +136,31 @@ pub async fn read_rvps_certs_map(client: &dyn RvpsClient) -> Result<HashMap<Stri
     match result {
         Some(json_str) => {
             let map: HashMap<String, Vec<String>> = serde_json::from_str(&json_str)?;
+            Ok(map)
+        }
+        None => Ok(HashMap::new()),
+    }
+}
+
+pub fn build_rvps_pubkeys_message(pubkeys_map: &HashMap<String, String>) -> Result<String> {
+    let payload = serde_json::json!({ RVPS_GUEST_OWNER_PUBKEYS_KEY: pubkeys_map });
+    let payload_b64 = STANDARD.encode(serde_json::to_vec(&payload)?);
+    let message = serde_json::json!({
+        "version": "0.1.0",
+        "payload": payload_b64,
+        "type": "sample"
+    });
+    Ok(serde_json::to_string(&message)?)
+}
+
+pub async fn read_rvps_pubkeys_map(client: &dyn RvpsClient) -> Result<HashMap<String, String>> {
+    let result = client
+        .query(RVPS_GUEST_OWNER_PUBKEYS_KEY.to_string())
+        .await?;
+
+    match result {
+        Some(json_str) => {
+            let map: HashMap<String, String> = serde_json::from_str(&json_str)?;
             Ok(map)
         }
         None => Ok(HashMap::new()),
@@ -395,12 +421,20 @@ impl RequestHandler for MeasurementHandler {
                     if let Some(client) = &self.rvps_client {
                         let _guard = self.rvps_certs_lock.lock().await;
                         let auth_key_digest = compute_auth_key_digest(&signing_keys.privkey_pem)?;
+
                         let mut certs_map = read_rvps_certs_map(client.as_ref()).await?;
-                        let certs = certs_map.entry(auth_key_digest).or_default();
+                        let certs = certs_map.entry(auth_key_digest.clone()).or_default();
                         if !certs.contains(cert) {
                             certs.push(cert.clone());
                         }
                         let message = build_rvps_message(&certs_map)?;
+                        client.register(message).await?;
+
+                        let mut pubkeys_map = read_rvps_pubkeys_map(client.as_ref()).await?;
+                        pubkeys_map
+                            .entry(auth_key_digest)
+                            .or_insert_with(|| author_key_b64.clone().unwrap());
+                        let message = build_rvps_pubkeys_message(&pubkeys_map)?;
                         client.register(message).await?;
                     }
                 }

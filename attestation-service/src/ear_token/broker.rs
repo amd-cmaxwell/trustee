@@ -149,8 +149,14 @@ impl EarAttestationTokenBroker {
         let mut submods = BTreeMap::new();
 
         // Create an appraisal for each device
-        for tee_claims in all_tee_claims {
+        for mut tee_claims in all_tee_claims {
             let mut appraisal = Appraisal::new();
+
+            if tee_claims.tee == Tee::Snp {
+                if let Some(ref rvps_client) = rvps_client {
+                    verify_snp_key_endorsement(&mut tee_claims.claims, rvps_client).await?;
+                }
+            }
 
             let tcb_claims = transform_claims(
                 tee_claims.claims,
@@ -497,6 +503,63 @@ pub fn transform_claims(
     output_claims.insert(to_variant_name(&tee)?.to_string(), transformed_claims);
 
     Ok(output_claims)
+}
+
+async fn verify_snp_key_endorsement(claims: &mut Value, rvps_client: &RvpsClient) -> Result<()> {
+    let claims_map = claims
+        .as_object_mut()
+        .context("SNP claims is not a JSON object")?;
+
+    // Verify SAMS IDKey endorsement
+    if let Some(id_key_digest) = claims_map.get("id_key_digest").and_then(|v| v.as_str()) {
+        let id_key_digest = id_key_digest.to_string();
+        let endorsed = match rvps_client
+            .lock()
+            .await
+            .query_reference_value("sams-id-key")
+            .await?
+        {
+            Some(rvps_value) => {
+                let pubkey_b64 = rvps_value
+                    .as_str()
+                    .context("sams-id-key RVPS value is not a string")?;
+                let pubkey_bytes = STANDARD.decode(pubkey_b64)?;
+                let digest = openssl::sha::sha384(&pubkey_bytes);
+                hex::encode(digest) == id_key_digest
+            }
+            None => false,
+        };
+        claims_map.insert("sams_id_key_endorsed".to_string(), Value::Bool(endorsed));
+    }
+
+    // Verify guest-owner AuthorKey endorsement
+    let author_key_en = claims_map
+        .get("author_key_en")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    if author_key_en {
+        if let Some(author_key_digest) =
+            claims_map.get("author_key_digest").and_then(|v| v.as_str())
+        {
+            let author_key_digest = author_key_digest.to_string();
+            let endorsed = match rvps_client
+                .lock()
+                .await
+                .query_reference_value("guest-owner-pubkeys")
+                .await?
+            {
+                Some(rvps_value) => {
+                    let pubkeys_map: HashMap<String, String> = serde_json::from_value(rvps_value)?;
+                    pubkeys_map.contains_key(&author_key_digest)
+                }
+                None => false,
+            };
+            claims_map.insert("author_key_endorsed".to_string(), Value::Bool(endorsed));
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
