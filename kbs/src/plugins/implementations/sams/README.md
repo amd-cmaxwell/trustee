@@ -16,7 +16,49 @@ API
 > For full request/response schemas see [Demystifying the Measurement Endpoints](demystifying-the-measurement-endpoints.md).
 > For the signing-policy design rationale see [Addendum on Dynamic Auth Keys](addendum-on-dynamic-auth-keys.md).
 
+### POST /authorization/policy
+#### Description:
+Admin sets the policy that gates ID Block issuance. Can also bump the MAGS counter to invalidate stale ID Blocks.
+#### Requires Admin?
+- Yes
+#### Request Params:
+- A JSON Object containing:
+ ```json
+ {
+    "policy": "< base64-encoded rego policy >",
+    "incr_gsvn": bool   //optional, default false
+}
+ ```
+
+#### Request Response Body:
+- OK,`{"gsvn": <MAGS value after operation: int>}`
+
+
+#### Expected usage:
+
+```shell
+encoded_policy=$(base64 <<EOF
+package policy
+import rego.v1
+default authorized := true
+EOF)
+payload="$(jq --args policy "$encoded_policy" '{"policy": $policy}')"
+
+kbs_host=localhost
+kbs_api_port=8080
+curl -X POST \
+    -H "Content-Type: application/json" \
+    -d "$payload" \
+    http://$kbs_host:$kbs_api_port/kbs/v0/sams/authorization/policy
+
+# Expected response: '{"gsvn": 0}'
+```
+
+---
+
 ### POST /measurement/\<tee\>/
+#### Description:
+Computes a launch measurement from CVM parameters. Optionally returns a signed ID Block if IDBlock metadata is included.
 #### Requires Admin?
 - No
 #### Request Params:
@@ -32,6 +74,8 @@ API
 ---
 
 ### POST /measurement/\<tee\>/auth
+#### Description:
+Primary endpoint for Kata Runtime at CVM launch. Like `/measurement/<tee>/` but also evaluates the authorization policy and produces a signed IdAuth. With a guest-owner cert, evaluates their signing-policy for full AuthKey signing.
 #### Requires Admin?
 - No
 #### Headers:
@@ -56,6 +100,8 @@ API
 ---
 
 ### POST /signing/policy
+#### Description:
+Guest-owner registers a Rego signing-policy that maps launch params to signing keypairs. Private keys stay in Trustee.
 #### Requires Admin?
 - No (mTLS-authenticated via proxy)
 #### Prerequisites:
@@ -102,6 +148,8 @@ curl \
 ---
 
 ### DELETE /signing/policy
+#### Description:
+Revokes the guest-owner's signing-policy and removes their cert from all RVPS endorsement lists.
 #### Requires Admin?
 - No (mTLS-authenticated via proxy)
 #### Prerequisites:
@@ -122,6 +170,8 @@ curl \
 ---
 
 ### DELETE /signing/key/\<base64(AuthKeyDigest)\>
+#### Description:
+Revokes a single signing-key endorsement from RVPS without touching the signing-policy.
 #### Requires Admin?
 - No (mTLS-authenticated via proxy)
 #### Prerequisites:
@@ -188,7 +238,8 @@ sequenceDiagram
     end
 
     opt Require pre-verification
-        note over spec: annotations:<br>io.katacontainers.config<br>.requirePreVerification: true
+        note over spec: annotations:<br>io.katacontainers.config.<br>requirePreVerification: true
+        note over spec: annotations:<br>io.katacontainers.config.<br>guestOwnerIdentity": <br>"<base64 of guest owner mTLS client cert>"
         k8s -->> kata_runtime: Request signed ID Block from SAMS at boot
     end
 
@@ -557,42 +608,6 @@ sequenceDiagram
     kata_agent ->> kata_agent: Create Pod
     kata_agent -->> kata_runtime: Pod created
     kata_runtime -->> k8s: Pod created
-```
-
-### POST /authorization/policy
-#### Requires Admin?
-- Yes
-#### Request Params:
-- A JSON Object containing:
- ```json
- {
-    "policy": "< base64-encoded rego policy >",
-    "incr_gsvn": bool   //optional, default false
-}
- ```
-
-#### Request Response Body:
-- OK,`{"gsvn": <MAGS value after operation: int>}`
-
-
-#### Expected usage:
-
-```shell
-encoded_policy=$(base64 <<EOF
-package policy
-import rego.v1
-default authorized := true
-EOF)
-payload="$(jq --args policy "$encoded_policy" '{"policy": $policy}')"
-
-kbs_host=localhost
-kbs_api_port=8080
-curl -X POST \
-    -H "Content-Type: application/json" \
-    -d "$payload" \
-    http://$kbs_host:$kbs_api_port/kbs/v0/sams/authorization/policy
-
-# Expected response: '{"gsvn": 0}'
 ```
 
 Design Documents

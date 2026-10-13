@@ -1,4 +1,9 @@
 # POST /kbs/v0/sams/measurement/snp
+
+> **Field naming convention:** The JSON request body uses `snake_case` field names
+> (e.g. `guest_policy`, `family_id`). The prose and SNP spec references use
+> UPPER_CASE (e.g. GUEST_POLICY, FAMILY_ID). They refer to the same fields.
+
 ## Headers
 None
 ## Request Body
@@ -9,7 +14,7 @@ None
     vmm_type: "<The Type of Virtual Machine (Hypervisor Specific) to be launched>",
     guest_features: <Kernel Guest Features Bitflag as a u64>,
     ovmf_hash_str: "<Precalculated Cryptographic Hash of the OpenVM Firmware file the hypervisor will use to launch the CVM>",
-    initrd_hash_str: "<Precalculated Cryptographic Hash of the initial filesystem the CVM will use>"
+    initrd_hash_str: "<Precalculated Cryptographic Hash of the initial filesystem the CVM will use>",
     kernel_hash_str: "<Precalculated Cryptographic Hash of the kernel file the CVM will use>",
     append: "<Kernel Cmdline Arguments...>",
     guest_policy: <Guest Policy Bitflag as a u32>,
@@ -52,7 +57,7 @@ the response body contains:
             `400 - Bad Request`
 # POST /kbs/v0/sams/measurement/snp/auth
 ## Headers
-`Authorization: Bearer <JWT containing the field "certificate": "<guest-owner client certificate (PEM)>">`
+`Authorization: Bearer <JWT containing the field "certificate": "<guest-owner client certificate (PEM)>">` _(optional)_
 
 ## Request Body
 ```json
@@ -62,7 +67,7 @@ the response body contains:
     vmm_type: "<The Type of Virtual Machine (Hypervisor Specific) to be launched>",
     guest_features: <Kernel Guest Features Bitflag as a u64>,
     ovmf_hash_str: "<Precalculated Cryptographic Hash of the OpenVM Firmware file the hypervisor will use to launch the CVM>",
-    initrd_hash_str: "<Precalculated Cryptographic Hash of the initial filesystem the CVM will use>"
+    initrd_hash_str: "<Precalculated Cryptographic Hash of the initial filesystem the CVM will use>",
     kernel_hash_str: "<Precalculated Cryptographic Hash of the kernel file the CVM will use>",
     append: "<Kernel Cmdline Arguments...>",
     guest_policy: <Guest Policy Bitflag as a u32>,
