@@ -23,8 +23,10 @@ STANDARD                              WITH SAMS
                                         id-block, id-auth, id-key
                                       ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄
 Launch CVM (no ID Block)              Launch CVM with ID Block
-                                        SNP firmware verifies sigs
-                                        + measurement match
+                                        SNP firmware verifies
+                                        sigs + measurement in
+                                        ID Block matches
+                                        actual measurement
                                       ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄
 CVM boots ──> RCAR handshake          CVM boots ──> RCAR handshake
   (same)                                (same, but report carries
@@ -40,9 +42,13 @@ AS verifies report                    AS verifies report
 Secret release (same)                 Secret release (same)
 ```
 
+[COMMENT_MG] it seems to me that the closer you are to the guest (image), the closer you would be to the ID key --> ID key is owner, auth key is Trustee
+
 **Key difference:** With SAMS, a CVM whose launch configuration does not match
 the signed ID Block is **prevented from booting entirely** by SNP firmware --
 a misconfigured guest never reaches the attestation phase.
+
+[COMMENT_MG] under non-malicious conditions. Under malicious conditions, I don't think anything can prevent CVM launch. That said, no security difference between CVM launch prevention and not releasing keys to the CVM.
 
 ## What Changes
 
@@ -58,7 +64,13 @@ a misconfigured guest never reaches the attestation phase.
 ## New Concepts
 
 - **MAGS** -- Monotonic counter in RVPS embedded as GUEST_SVN in ID Blocks. Lets verifier policies reject stale blocks without key rotation.
+
+[COMMENT_MG] this would be novel. Normally, GUEST_SVN is purely a property of the guest image, for example, if the guest image corresponding to a new release contains code that addresses CVEs, then bump the GUEST_SVN, else don't bump. It's also important to keep in mind GUEST_SVN's role in key derivation: it can optionally be mixed into derived keys and, if it is, then derived keys can be requested for any GUEST_SVN value <= current GUEST_SVN. This reflects the convention in the example above where higher GUEST_SVN means more secure. Is this proposal consistent/compatible with this?
+
 - **Signing-policies** -- Guest-owners upload Rego policies (over mTLS) mapping launch params to signing keypairs. SAMS evaluates server-side; private keys never reach the untrusted host.
+
+[COMMENT_MG] examples of "launch params that map to signing keypairs"? FAMILY_ID and IMAGE_ID?
+
 - **Authorization policy** -- Admin Rego policy gating ID Block issuance. Rejects non-compliant configs before they can boot.
 
 ## New API Surface
@@ -73,6 +85,8 @@ All under `/kbs/v0/sams/`. Guest-owner endpoints use mTLS.
 | `DELETE /signing/policy` | mTLS | Revoke signing-policy + certs from RVPS |
 | `DELETE /signing/key/<digest>` | mTLS | Revoke specific key endorsement |
 | `POST /authorization/policy` | Admin | Set authorization policy (+ bump MAGS) |
+
+[COMMENT_MG] This proposal involves SAMS putting something of value - rustee endorsement - in the ID Block. Since verifiers presumably pay attention to this, then all the APIs may need max auth/security (mTLS).
 
 ## What Does Not Change
 
@@ -90,6 +104,8 @@ Guest Owners who wish to run confidential workloads with pre-verification should
 3. Finally, add these annotations to their pods & run `kubectl rollout restart`:
    - `"io.katacontainers.config.requirePreVerification": "true"`
    - `"io.katacontainers.config.guestOwnerIdentity": "<base64 of mTLS client cert>"`
+
+[COMMENT_MG] Is 1 just telling guest owner to send cert. signing request (CSR) to "CA that SAMS is configured to trust"? 
 
 > **Note:** Kata Runtime must be patched to intercept these annotations, request a
 signed ID Block from SAMS, and pass `id-block`, `id-auth`, and
