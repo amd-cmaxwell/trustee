@@ -6,4 +6,4 @@
         - Is it possible to eliminate the need for an OVMF file altogether?
 - SAMS mTLS Cert & RootCA files will need to be rotated from time to time. 
     - Need to facilite mTLS cert rotation in an easy-to-rollover manner.
-        - This is likely to be out of scoop for SAMS itself & would be the trustee deployers responsibility to use an external_secrets operator inside of their trustee k8s cluster.
+        - This is likely to be out of scope for SAMS itself & would be the trustee deployer's responsibility to use an external_secrets operator inside their trustee k8s cluster.
