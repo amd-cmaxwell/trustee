@@ -113,7 +113,7 @@ the response body contains:
         3. If CVM Launch is Forbidden by the authorization policy:
             `403 - Forbidden` 
 2. **If ON TOP OF THAT, YOU SEND A Bearer Token containing a client certificate for a *REGISTERED* guest-owner (one who has uploaded a signing-policy via `POST /signing/policy`),** 
-***AND* the authorization policy approves of your launch params, ID Block Metadata, & client certificate,** then
+***AND* the authorization policy approves of your launch params, ID Block Metadata, & parsed client certificate** (the cert is provided to the policy as a structured `guest_owner_cert` object with `subject`, `issuer`, `serial`, `not_before`, `not_after`, and `extensions` fields)**, then**
 SAMS evaluates the guest-owner's **signing-policy** with the launch params as input. The policy selects which signing keypair to use by outputting `data.policy.pubkey` and `data.policy.privkey`. The response body contains:
     - Success Codes
         `200 - OK`

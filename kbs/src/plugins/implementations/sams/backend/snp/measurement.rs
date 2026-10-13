@@ -12,6 +12,7 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use key_value_storage::KeyValueStorage;
 use openssl::ec::EcKey;
 use openssl::pkey::Private;
+use openssl::x509::X509;
 use policy_engine::policy::rego::Regorus;
 use policy_engine::policy::rego::RegorusExtension;
 use policy_engine::PolicyEngine;
@@ -167,6 +168,62 @@ pub async fn read_rvps_pubkeys_map(client: &dyn RvpsClient) -> Result<HashMap<St
     }
 }
 
+fn x509_name_to_json(name: &openssl::x509::X509NameRef) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    for entry in name.entries() {
+        let key = entry.object().nid().short_name().unwrap_or("unknown");
+        let val = entry.data().to_string().unwrap_or_default();
+        map.insert(key.to_string(), serde_json::Value::String(val));
+    }
+    serde_json::Value::Object(map)
+}
+
+fn parse_x509_to_json(pem: &str) -> Result<serde_json::Value> {
+    let cert = X509::from_pem(pem.as_bytes()).context("failed to parse guest-owner cert PEM")?;
+    let subject = x509_name_to_json(cert.subject_name());
+    let issuer = x509_name_to_json(cert.issuer_name());
+    let serial = cert
+        .serial_number()
+        .to_bn()
+        .map(|bn| bn.to_hex_str().map(|s| s.to_string()))
+        .ok()
+        .and_then(|r| r.ok())
+        .unwrap_or_default();
+    let not_before = cert.not_before().to_string();
+    let not_after = cert.not_after().to_string();
+
+    let mut extensions = serde_json::Map::new();
+    if let Some(san) = cert.subject_alt_names() {
+        let names: Vec<String> = san
+            .iter()
+            .filter_map(|n| {
+                n.dnsname()
+                    .map(String::from)
+                    .or_else(|| n.email().map(String::from))
+                    .or_else(|| n.uri().map(String::from))
+                    .or_else(|| n.ipaddress().map(|ip| format!("{ip:?}")))
+            })
+            .collect();
+        if !names.is_empty() {
+            extensions.insert(
+                "subject_alt_names".to_string(),
+                serde_json::Value::Array(
+                    names.into_iter().map(serde_json::Value::String).collect(),
+                ),
+            );
+        }
+    }
+
+    Ok(serde_json::json!({
+        "subject": subject,
+        "issuer": issuer,
+        "serial": serial,
+        "not_before": not_before,
+        "not_after": not_after,
+        "extensions": extensions,
+    }))
+}
+
 pub struct MeasurementHandler {
     ovmf_file: PathBuf,
     id_key: EcKey<Private>,
@@ -280,7 +337,9 @@ impl RequestHandler for MeasurementHandler {
             if let Ok(policy) = self.auth_policy_engine.get_policy(AUTH_POLICY_ID).await {
                 let mut input_value = serde_json::to_value(&req)?;
                 if let Some(cert) = &guest_owner_cert {
-                    input_value["guest_owner_cert"] = serde_json::Value::String(cert.clone());
+                    if let Ok(parsed) = parse_x509_to_json(cert) {
+                        input_value["guest_owner_cert"] = parsed;
+                    }
                 }
                 let input = serde_json::to_string(&input_value)?;
 

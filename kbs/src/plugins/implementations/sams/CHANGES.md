@@ -52,7 +52,7 @@ a misconfigured guest never reaches the attestation phase.
 | **Measurement computation** | Offline by admin, uploaded to RVPS | Server-side by SAMS from launch params |
 | **ID Block** | Not used | SAMS signs it; firmware enforces at boot |
 | **Trustee endorsement** | Not in report | IDKeyDigest = SAMS key hash; broker verifies against RVPS and injects `sams_id_key_endorsed` |
-| **Guest-owner identity** | Not in report | AuthKeyDigest = owner key hash; broker verifies against RVPS and injects `author_key_endorsed`; certs available for policy assertions |
+| **Guest-owner identity** | Not in report | AuthKeyDigest = owner key hash; broker injects `author_key_endorsed` + parsed `guest_owner_certs` (subject, issuer, extensions) for policy assertions |
 | **Bad config at boot** | Boots, fails attestation later | Fails to boot |
 
 ## New Concepts

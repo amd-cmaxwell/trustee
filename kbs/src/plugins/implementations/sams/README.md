@@ -301,8 +301,8 @@ sequenceDiagram
         opt Pre-Verification against RVPS (authorization policy)
             sams ->> policy_engine: Register query_reference_value extension
             sams ->> policy_engine: Evaluate authorization policy
-            note over sams, policy_engine: input = LaunchParams<br>(+ client cert if present)<br>rules = [data.policy.authorized,<br>data.policy.extensions]
-            note over policy_engine: Policy can also assert on<br>client cert fields<br>(Subject, Extensions, etc.)
+            note over sams, policy_engine: input = LaunchParams,<br>IDBlock Metadata,<br>(+ parsed guest_owner_cert<br>object if present)<br>rules = [data.policy.authorized,<br>data.policy.extensions]
+            note over policy_engine: Policy can assert on<br>guest_owner_cert.subject,<br>.issuer, .extensions, etc.
             policy_engine ->> rvps: Query reference values (per rule)
             rvps -->> policy_engine: Reference values
             policy_engine ->> policy_engine: Compare launch params against values
@@ -456,16 +456,19 @@ the broker also checks whether the `author_key_digest` exists in the `"guest-own
 map in RVPS. The results are injected as `sams_id_key_endorsed` and `author_key_endorsed`
 boolean claims, available to the policy engine for trust decisions.
 
+When `author_key_en` is true, the broker also retrieves the guest-owner's mTLS
+certificates from RVPS (`"guest-owner-certs"` list for the matching AuthKeyDigest), parses
+each PEM certificate into a structured JSON object, and injects them as `guest_owner_certs`
+in the claims. Each cert object contains `subject`, `issuer`, `serial`, `not_before`,
+`not_after`, and `extensions` (including `subject_alt_names`) — allowing policies to make
+assertions like `input.guest_owner_certs[i].subject.O == "Acme Corp"`.
+
 The verified claims are then evaluated by the Policy Engine against the EAR appraisal policy.
 Policy provisions can query RVPS for reference values, verify the reported `guest_svn` against
-the Minimum Acceptable Guest SVN (MAGS) from RVPS, and check the `sams_id_key_endorsed` and
-`author_key_endorsed` flags injected by the broker. When a guest owner has a signing-policy
-registered with SAMS, verifier policies can also look up the guest owner's client certs from
-RVPS using the AuthKeyDigest as the retrieval key (multiple certs may be returned if different
-guest-owners share a signing key), and make assertions about each certificate's Subject and
-Extensions fields. Any mismatch adjusts the trust claims at a severity determined by the
-Verifier Policy Owner. The final result is an EAR token encoding the TEE's trustworthiness
-vector.
+the Minimum Acceptable Guest SVN (MAGS) from RVPS, check the `sams_id_key_endorsed` and
+`author_key_endorsed` flags, and assert on the structured `guest_owner_certs`. Any mismatch
+adjusts the trust claims at a severity determined by the Verifier Policy Owner. The final
+result is an EAR token encoding the TEE's trustworthiness vector.
 
 > **TODO:** `ear_default_policy_cpu.rego` needs to be updated to set the trustworthiness
 > vector status to "warning" or "contraindicated" when `sams_id_key_endorsed` or
@@ -512,13 +515,18 @@ sequenceDiagram
             rvps -->> snp_verifier: AuthKeyDigest -> pubkey map
             snp_verifier ->> snp_verifier: author_key_digest in map?
             note over snp_verifier: Inject author_key_endorsed<br>into claims
+
+            snp_verifier ->> rvps: query_reference_value("guest-owner-certs")
+            rvps -->> snp_verifier: AuthKeyDigest -> cert list
+            snp_verifier ->> snp_verifier: Parse PEM certs into<br>structured JSON objects
+            note over snp_verifier: Inject guest_owner_certs<br>into claims (subject, issuer,<br>serial, validity, extensions)
         end
     end
 
     critical Evaluate appraisal policy
         snp_verifier ->> policy_engine: Register query_reference_value extension
         snp_verifier ->> policy_engine: Evaluate EAR policy for TEE class
-        note over snp_verifier, policy_engine: input = claims from report<br>(incl. sams_id_key_endorsed,<br>author_key_endorsed, guest_svn,<br>family_id, image_id)<br>rules = [data.policy.trust_claims,<br>data.policy.extensions]
+        note over snp_verifier, policy_engine: input = claims from report<br>(incl. sams_id_key_endorsed,<br>author_key_endorsed,<br>guest_owner_certs,<br>guest_svn, family_id, image_id)<br>rules = [data.policy.trust_claims,<br>data.policy.extensions]
 
         loop For each policy provision
             opt Provision queries reference values
@@ -552,10 +560,8 @@ sequenceDiagram
             end
         end
 
-        opt Verify Guest Owner identity (certs)
-            policy_engine ->> rvps: query_reference_value("guest-owner-certs")[AuthKeyDigest]
-            rvps -->> policy_engine: Guest-owner client certificates (list)
-            policy_engine ->> policy_engine: Assert against cert fields<br>(Subject, Extensions, etc.)
+        opt Assert on Guest Owner identity (certs)
+            policy_engine ->> policy_engine: Assert on guest_owner_certs<br>(subject, issuer, extensions, etc.)
             break Guest-owner cert assertion fails
                 policy_engine ->> policy_engine: Adjust trust claims
             end
