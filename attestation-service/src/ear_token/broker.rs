@@ -510,61 +510,69 @@ async fn verify_snp_key_endorsement(claims: &mut Value, rvps_client: &RvpsClient
         .as_object_mut()
         .context("SNP claims is not a JSON object")?;
 
-    // Verify SAMS IDKey endorsement
-    if let Some(id_key_digest) = claims_map.get("id_key_digest").and_then(|v| v.as_str()) {
-        let id_key_digest = id_key_digest.to_string();
-        let endorsed = match rvps_client
-            .lock()
-            .await
-            .query_reference_value("sams-id-key")
-            .await?
-        {
-            Some(rvps_value) => {
-                let pubkey_b64 = rvps_value
-                    .as_str()
-                    .context("sams-id-key RVPS value is not a string")?;
-                let pubkey_bytes = STANDARD.decode(pubkey_b64)?;
-                let digest = openssl::sha::sha384(&pubkey_bytes);
-                hex::encode(digest) == id_key_digest
-            }
-            None => false,
-        };
-        claims_map.insert("sams_id_key_endorsed".to_string(), Value::Bool(endorsed));
-    }
-
-    // Verify guest-owner AuthorKey endorsement and resolve certs
-    let author_key_en = claims_map
-        .get("author_key_en")
+    let id_block_enabled = claims_map
+        .get("id_block_en")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-
-    if author_key_en {
-        if let Some(author_key_digest) =
-            claims_map.get("author_key_digest").and_then(|v| v.as_str())
-        {
-            let author_key_digest = author_key_digest.to_string();
-            let rvps = rvps_client.lock().await;
-
-            let endorsed = match rvps.query_reference_value("guest-owner-pubkeys").await? {
+    
+    if id_block_enabled {
+        // Verify SAMS IDKey endorsement
+        if let Some(id_key_digest) = claims_map.get("id_key_digest").and_then(|v| v.as_str()) {
+            let id_key_digest = id_key_digest.to_string();
+            let endorsed = match rvps_client
+                .lock()
+                .await
+                .query_reference_value("sams-id-key")
+                .await?
+            {
                 Some(rvps_value) => {
-                    let pubkeys_map: HashMap<String, String> = serde_json::from_value(rvps_value)?;
-                    pubkeys_map.contains_key(&author_key_digest)
+                    let pubkey_b64 = rvps_value
+                        .as_str()
+                        .context("sams-id-key RVPS value is not a string")?;
+                    let pubkey_bytes = STANDARD.decode(pubkey_b64)?;
+                    let digest = openssl::sha::sha384(&pubkey_bytes);
+                    hex::encode(digest) == id_key_digest
                 }
                 None => false,
             };
-            claims_map.insert("author_key_endorsed".to_string(), Value::Bool(endorsed));
+            claims_map.insert("sams_id_key_endorsed".to_string(), Value::Bool(endorsed));
+        }
 
-            if let Some(rvps_value) = rvps.query_reference_value("guest-owner-certs").await? {
-                let certs_map: HashMap<String, Vec<String>> = serde_json::from_value(rvps_value)?;
-                if let Some(pem_certs) = certs_map.get(&author_key_digest) {
-                    let parsed: Vec<Value> = pem_certs
-                        .iter()
-                        .filter_map(|pem| parse_x509_to_json(pem).ok())
-                        .collect();
-                    claims_map.insert("guest_owner_certs".to_string(), Value::Array(parsed));
+        // Verify guest-owner AuthorKey endorsement and resolve certs
+        let author_key_en = claims_map
+            .get("author_key_en")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        if author_key_en {
+            if let Some(author_key_digest) =
+                claims_map.get("author_key_digest").and_then(|v| v.as_str())
+            {
+                let author_key_digest = author_key_digest.to_string();
+                let rvps = rvps_client.lock().await;
+
+                let endorsed = match rvps.query_reference_value("guest-owner-pubkeys").await? {
+                    Some(rvps_value) => {
+                        let pubkeys_map: HashMap<String, String> = serde_json::from_value(rvps_value)?;
+                        pubkeys_map.contains_key(&author_key_digest)
+                    }
+                    None => false,
+                };
+                claims_map.insert("author_key_endorsed".to_string(), Value::Bool(endorsed));
+
+                if let Some(rvps_value) = rvps.query_reference_value("guest-owner-certs").await? {
+                    let certs_map: HashMap<String, Vec<String>> = serde_json::from_value(rvps_value)?;
+                    if let Some(pem_certs) = certs_map.get(&author_key_digest) {
+                        let parsed: Vec<Value> = pem_certs
+                            .iter()
+                            .filter_map(|pem| parse_x509_to_json(pem).ok())
+                            .collect();
+                        claims_map.insert("guest_owner_certs".to_string(), Value::Array(parsed));
+                    }
                 }
             }
         }
+
     }
 
     Ok(())

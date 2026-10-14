@@ -35,6 +35,8 @@ use strum::{Display, EnumIter, EnumString, IntoEnumIterator};
 use tracing::{debug, instrument, warn};
 use x509_parser::prelude::*;
 
+pub const NULL_KEY_DIGEST: [u8; 48] = [0; 48];
+
 #[derive(Serialize, Deserialize)]
 pub struct SnpEvidence {
     attestation_report: AttestationReport,
@@ -660,6 +662,7 @@ pub(crate) fn parse_tee_evidence(report: &AttestationReport) -> TeeEvidenceParse
         "chip_id": hex::encode(report.chip_id),
 
         // id block fields
+        "id_block_en": report.id_key_digest != NULL_KEY_DIGEST,
         "id_key_digest": hex::encode(report.id_key_digest),
         "author_key_digest": hex::encode(report.author_key_digest),
         "author_key_en": report.key_info.author_key_en(),

@@ -99,11 +99,38 @@ configuration := 2 if {
 }
 
 ##### SNP
+
+# CASE: The EXACT SNP launch measurement is available in the RVPS
 executables := 3 if {
 	input.snp
 
 	# In the future, we might calculate this measurement here various components
 	input.snp.measurement in query_reference_value("snp_launch_measurement")
+}
+
+
+# CASE: The Signing, Authorization, & Measurement Service (SAMS) 
+#       has already evaluated the CVM's launch parameters 
+#       and has authorized the launch configuration
+executables := 3 if {
+	input.snp
+
+	# The CVM Launched with an ID Block, 
+	# indicating the launch configuration has been verified by the SNP Firmware prior to launch.
+	input.snp.id_block_en == true
+
+	# The id_key_digest in the report matches the SHA-384 hash of the SAMS Public Key,
+	# indicating the Launch Configuration was authorized by The SAMS Authorization Policy.
+	input.snp.sams_id_key_endorsed == true
+
+	# The Guest Owner registered a signing-policy with SAMS,
+	# which has been evaluated and confirmed 
+	# to have signed-off on the launch configuration,
+	# at the guest owner's behest.
+	input.snp.author_key_endorsed == true
+
+	# The CVM was launched under the newest Security Revision of the SAMS Authorization Policy.
+	input.snp.guest_svn >= query_reference_value("snp_minimum_acceptable_guest_svn")
 }
 
 hardware := 2 if {

@@ -2,7 +2,6 @@ pub mod auth;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::str::FromStr;
 use std::sync::Arc;
 
 use actix_web::http::header::HeaderMap;
@@ -43,10 +42,10 @@ const RVPS_GUEST_OWNER_PUBKEYS_KEY: &str = "guest-owner-pubkeys";
 #[derive(Deserialize, Serialize)]
 pub struct SnpMeasurementRequest {
     pub vcpus: u32,
-    pub vcpu_type: String,
+    pub vcpu_type: CpuType,
     #[serde(default)]
-    pub vmm_type: Option<String>,
-    pub guest_features: u64,
+    pub vmm_type: Option<VMMType>,
+    pub guest_features: GuestFeatures,
     pub ovmf_hash_str: String,
     #[serde(default)]
     pub kernel_hash_str: Option<String>,
@@ -55,7 +54,7 @@ pub struct SnpMeasurementRequest {
     #[serde(default)]
     pub append: Option<String>,
     #[serde(default)]
-    pub guest_policy: Option<u64>,
+    pub guest_policy: Option<GuestPolicy>,
     #[serde(default)]
     pub family_id: Option<String>,
     #[serde(default)]
@@ -257,28 +256,16 @@ impl RequestHandler for MeasurementHandler {
             }
         }
 
-        let vcpu_type = CpuType::try_from(req.vcpu_type.as_str())
-            .map_err(|e| anyhow!("invalid vcpu_type: {e}"))?;
-
-        let vmm_type = req
-            .vmm_type
-            .as_deref()
-            .map(VMMType::from_str)
-            .transpose()
-            .map_err(|e| anyhow!("invalid vmm_type: {e}"))?;
-
-        let guest_features = GuestFeatures(req.guest_features);
-
         let args = SnpMeasurementArgs {
             vcpus: req.vcpus,
-            vcpu_type,
+            vcpu_type: req.vcpu_type,
             ovmf_file: self.ovmf_file.clone(),
-            guest_features,
+            guest_features: req.guest_features,
             kernel_file: None,
             initrd_file: None,
             append: req.append.as_deref(),
             ovmf_hash_str: Some(req.ovmf_hash_str.as_str()),
-            vmm_type,
+            vmm_type: req.vmm_type,
             kernel_hash_str: req.kernel_hash_str.as_deref(),
             initrd_hash_str: req.initrd_hash_str.as_deref(),
         };
@@ -299,7 +286,7 @@ impl RequestHandler for MeasurementHandler {
         if let (Some(fam), Some(img)) = (&req.family_id, &req.image_id) {
             let family_id = FamilyId::new(parse_id_bytes(fam)?);
             let image_id = ImageId::new(parse_id_bytes(img)?);
-            let policy = req.guest_policy.map(GuestPolicy);
+            let policy = req.guest_policy;
             let guest_svn = read_mags(&*self.storage).await?;
 
             let block = IdBlock::new(

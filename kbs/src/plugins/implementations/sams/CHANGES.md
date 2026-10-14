@@ -23,8 +23,10 @@ STANDARD                              WITH SAMS
                                         id-block, id-auth, id-key
                                       ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄
 Launch CVM (no ID Block)              Launch CVM with ID Block
-                                        SNP firmware verifies sigs
-                                        + measurement match
+                                        SNP firmware verifies
+                                        sigs + measurement in
+                                        ID Block matches
+                                        actual measurement
                                       ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄
 CVM boots ──> RCAR handshake          CVM boots ──> RCAR handshake
   (same)                                (same, but report carries

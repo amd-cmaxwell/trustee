@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 use super::super::api::RequestHandler;
 
 pub const AUTH_POLICY_ID: &str = "auth-policy";
-pub const MAGS_KEY: &str = "mags";
+pub const MAGS_KEY: &str = "snp_minimum_acceptable_guest_svn";
 
 #[derive(Deserialize)]
 pub struct AuthorizationPolicyRequest {
