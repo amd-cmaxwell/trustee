@@ -95,3 +95,131 @@ impl RequestHandler for AuthorizationPolicyHandler {
         Ok(serde_json::to_vec(&resp)?)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use actix_web::http::header::HeaderMap;
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine;
+    use key_value_storage::memory::MemoryKeyValueStorage;
+    use policy_engine::policy::rego::Regorus;
+    use policy_engine::PolicyEngine;
+
+    fn memory_storage() -> Arc<dyn key_value_storage::KeyValueStorage> {
+        Arc::new(MemoryKeyValueStorage::default())
+    }
+
+    fn memory_policy_engine() -> PolicyEngine<Regorus> {
+        PolicyEngine::<Regorus>::new(memory_storage())
+    }
+
+    #[test]
+    fn test_authorization_policy_request_deserialize() {
+        let json = r#"{"policy":"dGVzdA==","incr_gsvn":true}"#;
+        let req: AuthorizationPolicyRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.policy, "dGVzdA==");
+        assert!(req.incr_gsvn);
+    }
+
+    #[test]
+    fn test_authorization_policy_request_incr_gsvn_defaults_false() {
+        let json = r#"{"policy":"dGVzdA=="}"#;
+        let req: AuthorizationPolicyRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.policy, "dGVzdA==");
+        assert!(!req.incr_gsvn);
+    }
+
+    #[test]
+    fn test_authorization_policy_response_serialize() {
+        let resp = AuthorizationPolicyResponse { gsvn: 42 };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert_eq!(json, r#"{"gsvn":42}"#);
+    }
+
+    #[tokio::test]
+    async fn test_read_mags_empty_returns_zero() {
+        let storage = memory_storage();
+        let val = read_mags(&*storage).await.unwrap();
+        assert_eq!(val, 0);
+    }
+
+    #[tokio::test]
+    async fn test_write_then_read_mags() {
+        let storage = memory_storage();
+        write_mags(&*storage, 5).await.unwrap();
+        let val = read_mags(&*storage).await.unwrap();
+        assert_eq!(val, 5);
+    }
+
+    #[tokio::test]
+    async fn test_handle_sets_policy_and_returns_gsvn() {
+        let rego = "package policy\ndefault authorized = true";
+        let encoded = STANDARD.encode(rego);
+        let body = serde_json::to_vec(&serde_json::json!({
+            "policy": encoded,
+            "incr_gsvn": false,
+        }))
+        .unwrap();
+
+        let storage = memory_storage();
+        let mut handler = AuthorizationPolicyHandler::new(
+            memory_policy_engine(),
+            storage,
+            Arc::new(Mutex::new(())),
+        );
+
+        let result = handler.handle(&body, &HeaderMap::new()).await.unwrap();
+        let resp: serde_json::Value = serde_json::from_slice(&result).unwrap();
+        assert_eq!(resp["gsvn"], 0);
+    }
+
+    #[tokio::test]
+    async fn test_handle_incr_gsvn() {
+        let rego = "package policy\ndefault authorized = true";
+        let encoded = STANDARD.encode(rego);
+        let body = serde_json::to_vec(&serde_json::json!({
+            "policy": encoded,
+            "incr_gsvn": true,
+        }))
+        .unwrap();
+
+        let storage = memory_storage();
+        let mags_lock = Arc::new(Mutex::new(()));
+        let mut handler = AuthorizationPolicyHandler::new(
+            memory_policy_engine(),
+            Arc::clone(&storage),
+            Arc::clone(&mags_lock),
+        );
+
+        let result = handler.handle(&body, &HeaderMap::new()).await.unwrap();
+        let resp: serde_json::Value = serde_json::from_slice(&result).unwrap();
+        assert_eq!(resp["gsvn"], 1);
+
+        let result = handler.handle(&body, &HeaderMap::new()).await.unwrap();
+        let resp: serde_json::Value = serde_json::from_slice(&result).unwrap();
+        assert_eq!(resp["gsvn"], 2);
+    }
+
+    #[tokio::test]
+    async fn test_handle_invalid_base64_policy() {
+        let body = serde_json::to_vec(&serde_json::json!({
+            "policy": "!!!not-base64!!!",
+            "incr_gsvn": false,
+        }))
+        .unwrap();
+
+        let storage = memory_storage();
+        let mut handler = AuthorizationPolicyHandler::new(
+            memory_policy_engine(),
+            storage,
+            Arc::new(Mutex::new(())),
+        );
+
+        let err = handler.handle(&body, &HeaderMap::new()).await.unwrap_err();
+        assert!(
+            err.to_string().contains("invalid base64"),
+            "expected 'invalid base64' in error, got: {err}"
+        );
+    }
+}

@@ -371,3 +371,277 @@ impl RequestHandler for MeasurementHandler {
         Ok(serde_json::to_vec(&resp)?)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugins::implementations::sams::rvps_client::test_support::MockRvpsClient;
+    use key_value_storage::memory::MemoryKeyValueStorage;
+    use openssl::ec::{EcGroup, EcKey};
+    use openssl::nid::Nid;
+    use policy_engine::policy::rego::Regorus;
+    use policy_engine::PolicyEngine;
+    use rstest::rstest;
+
+    fn memory_storage() -> Arc<dyn key_value_storage::KeyValueStorage> {
+        Arc::new(MemoryKeyValueStorage::default())
+    }
+
+    fn memory_policy_engine() -> PolicyEngine<Regorus> {
+        PolicyEngine::<Regorus>::new(memory_storage())
+    }
+
+    fn test_ec_key() -> EcKey<Private> {
+        let group = EcGroup::from_curve_name(Nid::SECP384R1).unwrap();
+        EcKey::generate(&group).unwrap()
+    }
+
+    // --- parse_id_bytes ---
+
+    #[test]
+    fn test_parse_id_bytes_valid() {
+        let result = parse_id_bytes("000102030405060708090a0b0c0d0e0f").unwrap();
+        assert_eq!(
+            result,
+            [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+        );
+    }
+
+    #[test]
+    fn test_parse_id_bytes_invalid_hex() {
+        let err = parse_id_bytes("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz").unwrap_err();
+        assert!(err.to_string().contains("invalid hex"), "unexpected: {err}");
+    }
+
+    #[rstest]
+    #[case("0001")]
+    #[case("")]
+    #[case("000102030405060708090a0b0c0d0e0f00")]
+    fn test_parse_id_bytes_wrong_length(#[case] input: &str) {
+        let err = parse_id_bytes(input).unwrap_err();
+        assert!(
+            err.to_string().contains("exactly 16 bytes"),
+            "unexpected: {err}"
+        );
+    }
+
+    // --- build/read RVPS messages ---
+
+    #[test]
+    fn test_build_rvps_message_roundtrip() {
+        let mut map = HashMap::new();
+        map.insert(
+            "digest-1".to_string(),
+            vec!["cert-a".to_string(), "cert-b".to_string()],
+        );
+
+        let message = build_rvps_message(&map).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&message).unwrap();
+        assert_eq!(parsed["version"], "0.1.0");
+        assert_eq!(parsed["type"], "sample");
+
+        let payload_b64 = parsed["payload"].as_str().unwrap();
+        let payload_bytes = STANDARD.decode(payload_b64).unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&payload_bytes).unwrap();
+        let certs = payload[RVPS_GUEST_OWNER_CERTS_KEY]["digest-1"]
+            .as_array()
+            .unwrap();
+        assert_eq!(certs.len(), 2);
+    }
+
+    #[test]
+    fn test_build_rvps_message_empty_map() {
+        let map = HashMap::new();
+        let message = build_rvps_message(&map).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&message).unwrap();
+        let payload_bytes = STANDARD
+            .decode(parsed["payload"].as_str().unwrap())
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&payload_bytes).unwrap();
+        let certs_map = payload[RVPS_GUEST_OWNER_CERTS_KEY].as_object().unwrap();
+        assert!(certs_map.is_empty());
+    }
+
+    #[test]
+    fn test_build_rvps_pubkeys_message_roundtrip() {
+        let mut map = HashMap::new();
+        map.insert("digest-1".to_string(), "pubkey-data".to_string());
+
+        let message = build_rvps_pubkeys_message(&map).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&message).unwrap();
+        let payload_bytes = STANDARD
+            .decode(parsed["payload"].as_str().unwrap())
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&payload_bytes).unwrap();
+        assert_eq!(
+            payload[RVPS_GUEST_OWNER_PUBKEYS_KEY]["digest-1"],
+            "pubkey-data"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_read_rvps_certs_map_empty() {
+        let client = MockRvpsClient::new();
+        let result = read_rvps_certs_map(&client).await.unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_read_rvps_certs_map_after_register() {
+        let client = MockRvpsClient::new();
+
+        let mut expected = HashMap::new();
+        expected.insert("key-1".to_string(), vec!["cert-1".to_string()]);
+
+        let message = build_rvps_message(&expected).unwrap();
+        client.register(message).await.unwrap();
+
+        let result = read_rvps_certs_map(&client).await.unwrap();
+        assert_eq!(result, expected);
+    }
+
+    #[tokio::test]
+    async fn test_read_rvps_pubkeys_map_empty() {
+        let client = MockRvpsClient::new();
+        let result = read_rvps_pubkeys_map(&client).await.unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_read_rvps_pubkeys_map_after_register() {
+        let client = MockRvpsClient::new();
+
+        let mut expected = HashMap::new();
+        expected.insert("key-1".to_string(), "pubkey-1".to_string());
+
+        let message = build_rvps_pubkeys_message(&expected).unwrap();
+        client.register(message).await.unwrap();
+
+        let result = read_rvps_pubkeys_map(&client).await.unwrap();
+        assert_eq!(result, expected);
+    }
+
+    // --- SnpMeasurementRequest/Response serde ---
+
+    #[test]
+    fn test_snp_measurement_request_deserialize_minimal() {
+        let json = serde_json::json!({
+            "vcpus": 4,
+            "vcpu_type": "EpycV4",
+            "guest_features": 1,
+            "ovmf_hash_str": "abcdef0123456789"
+        });
+        let req: SnpMeasurementRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.vcpus, 4);
+        assert_eq!(req.ovmf_hash_str, "abcdef0123456789");
+        assert!(req.vmm_type.is_none());
+        assert!(req.kernel_hash_str.is_none());
+        assert!(req.initrd_hash_str.is_none());
+        assert!(req.append.is_none());
+        assert!(req.guest_policy.is_none());
+        assert!(req.family_id.is_none());
+        assert!(req.image_id.is_none());
+    }
+
+    #[test]
+    fn test_snp_measurement_request_deserialize_full() {
+        let json = serde_json::json!({
+            "vcpus": 8,
+            "vcpu_type": "EpycV4",
+            "vmm_type": "QEMU",
+            "guest_features": 1,
+            "ovmf_hash_str": "abcdef",
+            "kernel_hash_str": "112233",
+            "initrd_hash_str": "445566",
+            "append": "console=ttyS0",
+            "guest_policy": 196608,
+            "family_id": "000102030405060708090a0b0c0d0e0f",
+            "image_id": "0f0e0d0c0b0a09080706050403020100"
+        });
+        let req: SnpMeasurementRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.vcpus, 8);
+        assert!(req.vmm_type.is_some());
+        assert!(req.kernel_hash_str.is_some());
+        assert!(req.initrd_hash_str.is_some());
+        assert!(req.append.is_some());
+        assert!(req.guest_policy.is_some());
+        assert!(req.family_id.is_some());
+        assert!(req.image_id.is_some());
+    }
+
+    #[test]
+    fn test_snp_measurement_response_serialization_partial() {
+        let resp = SnpMeasurementResponse {
+            measurement: "deadbeef".to_string(),
+            id_block: None,
+            id_auth: None,
+            id_key: None,
+            author_key: None,
+        };
+        let json: serde_json::Value = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["measurement"], "deadbeef");
+        assert!(json.get("id-block").is_none());
+        assert!(json.get("id-auth").is_none());
+        assert!(json.get("id-key").is_none());
+        assert!(json.get("author-key").is_none());
+    }
+
+    #[test]
+    fn test_snp_measurement_response_serialization_full() {
+        let resp = SnpMeasurementResponse {
+            measurement: "deadbeef".to_string(),
+            id_block: Some("block".to_string()),
+            id_auth: Some("auth".to_string()),
+            id_key: Some("key".to_string()),
+            author_key: Some("author".to_string()),
+        };
+        let json: serde_json::Value = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["measurement"], "deadbeef");
+        assert_eq!(json["id-block"], "block");
+        assert_eq!(json["id-auth"], "auth");
+        assert_eq!(json["id-key"], "key");
+        assert_eq!(json["author-key"], "author");
+    }
+
+    // --- read_mags ---
+
+    #[tokio::test]
+    async fn test_read_mags_empty_returns_zero() {
+        let storage = memory_storage();
+        let result = read_mags(&*storage).await.unwrap();
+        assert_eq!(result, 0);
+    }
+
+    // --- MeasurementHandler ---
+
+    #[tokio::test]
+    async fn test_measurement_handler_auth_missing_required_fields() {
+        let id_key = test_ec_key();
+        let storage = memory_storage();
+        let mut handler = MeasurementHandler::new(
+            PathBuf::from("/dev/null"),
+            id_key,
+            true,
+            None,
+            Arc::new(Mutex::new(())),
+            memory_policy_engine(),
+            memory_policy_engine(),
+            storage,
+        );
+
+        let req = serde_json::json!({
+            "vcpus": 4,
+            "vcpu_type": "EpycV4",
+            "guest_features": 1,
+            "ovmf_hash_str": "abcdef0123456789"
+        });
+        let body = serde_json::to_vec(&req).unwrap();
+        let headers = actix_web::http::header::HeaderMap::new();
+
+        let err = handler.handle(&body, &headers).await.unwrap_err();
+        assert!(
+            err.to_string().contains("auth endpoint requires"),
+            "unexpected error: {err}"
+        );
+    }
+}

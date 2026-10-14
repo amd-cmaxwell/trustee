@@ -260,3 +260,170 @@ impl ClientPlugin for Sams {
         Ok(false)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rstest::rstest;
+
+    #[test]
+    fn test_tee_from_path_snp() {
+        let tee = tee_from_path("snp").unwrap();
+        assert!(matches!(tee, Tee::Snp));
+    }
+
+    #[rstest]
+    #[case("tdx")]
+    #[case("sgx")]
+    #[case("cca")]
+    #[case("unknown")]
+    #[case("")]
+    fn test_tee_from_path_unsupported(#[case] input: &str) {
+        let err = tee_from_path(input).unwrap_err();
+        assert!(
+            err.to_string().contains("unsupported TEE type"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_sams_config_minimal_toml() {
+        let toml_str = r#"
+            ovmf_file = "/path/to/ovmf.fd"
+            id_key_file = "/path/to/id.pem"
+        "#;
+        let cfg: SamsConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.ovmf_file, PathBuf::from("/path/to/ovmf.fd"));
+        assert_eq!(cfg.id_key_file, PathBuf::from("/path/to/id.pem"));
+        assert!(cfg.rvps.is_none());
+    }
+
+    #[test]
+    fn test_sams_config_grpc_rvps() {
+        let toml_str = r#"
+            ovmf_file = "/path/to/ovmf.fd"
+            id_key_file = "/path/to/id.pem"
+
+            [rvps]
+            type = "Grpc"
+            address = "http://localhost:50004"
+        "#;
+        let cfg: SamsConfig = toml::from_str(toml_str).unwrap();
+        match cfg.rvps.unwrap() {
+            SamsRvpsConfig::Grpc { address } => {
+                assert_eq!(address, "http://localhost:50004");
+            }
+            other => panic!("expected Grpc, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_sams_config_builtin_rvps_default_storage() {
+        let toml_str = r#"
+            ovmf_file = "/path/to/ovmf.fd"
+            id_key_file = "/path/to/id.pem"
+
+            [rvps]
+            type = "Builtin"
+        "#;
+        let cfg: SamsConfig = toml::from_str(toml_str).unwrap();
+        match cfg.rvps.unwrap() {
+            SamsRvpsConfig::Builtin { storage_type } => {
+                assert!(storage_type.is_none());
+            }
+            other => panic!("expected Builtin, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_sams_config_missing_required_field() {
+        let toml_str = r#"
+            id_key_file = "/path/to/id.pem"
+        "#;
+        assert!(toml::from_str::<SamsConfig>(toml_str).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_auth_mode_measurement_path() {
+        let sams = build_test_sams().await;
+        let body = b"";
+        let query = HashMap::new();
+        let method = Method::POST;
+
+        let mode = sams
+            .auth_mode(body, &query, &["measurement", "snp"], &method)
+            .await
+            .unwrap();
+        assert!(matches!(mode, AuthMode::Plugin));
+
+        let mode = sams
+            .auth_mode(body, &query, &["signing", "policy"], &method)
+            .await
+            .unwrap();
+        assert!(matches!(mode, AuthMode::Plugin));
+
+        let mode = sams
+            .auth_mode(body, &query, &["other"], &method)
+            .await
+            .unwrap();
+        assert!(matches!(mode, AuthMode::Admin));
+    }
+
+    #[tokio::test]
+    async fn test_validate_auth_always_true() {
+        let sams = build_test_sams().await;
+        let result = sams
+            .validate_auth(b"", &HashMap::new(), &["anything"], &Method::GET)
+            .await
+            .unwrap();
+        assert!(result);
+    }
+
+    #[tokio::test]
+    async fn test_encrypted_always_false() {
+        let sams = build_test_sams().await;
+        let result = sams
+            .encrypted(b"", &HashMap::new(), &["anything"], &Method::GET)
+            .await
+            .unwrap();
+        assert!(!result);
+    }
+
+    #[tokio::test]
+    async fn test_handle_unsupported_route() {
+        let sams = build_test_sams().await;
+        let err = sams
+            .handle(b"{}", &HashMap::new(), &["unknown"], &Method::GET, None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("unsupported"), "unexpected: {err}");
+    }
+
+    async fn build_test_sams() -> Sams {
+        use key_value_storage::memory::MemoryKeyValueStorage;
+        use openssl::ec::{EcGroup, EcKey};
+        use openssl::nid::Nid;
+        use policy_engine::policy::rego::Regorus;
+        use policy_engine::PolicyEngine;
+
+        let group = EcGroup::from_curve_name(Nid::SECP384R1).unwrap();
+        let id_key = EcKey::generate(&group).unwrap();
+
+        let storage = Arc::new(MemoryKeyValueStorage::default())
+            as key_value_storage::KeyValueStorageInstance;
+        let policy_engine = PolicyEngine::<Regorus>::new(storage.clone());
+        let signing_policy_engine =
+            PolicyEngine::<Regorus>::new(Arc::new(MemoryKeyValueStorage::default()));
+
+        Sams {
+            ovmf_file: PathBuf::from("/dev/null"),
+            id_key,
+            rvps_client: None,
+            rvps_certs_lock: Arc::new(Mutex::new(())),
+            mags_lock: Arc::new(Mutex::new(())),
+            auth_policy_engine: policy_engine,
+            signing_policy_engine,
+            storage,
+        }
+    }
+}

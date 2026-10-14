@@ -380,6 +380,7 @@ mod tests {
             tls: TlsConfig {
                 private_key: Some("/etc/kbs-private.key".into()),
                 certificate: Some("/etc/kbs-cert.pem".into()),
+                client_ca_cert: None,
                 profile: TlsProfile::default(),
                 min_version: None,
                 max_version: None,
@@ -485,6 +486,7 @@ mod tests {
             tls: TlsConfig {
                 private_key: Some("/etc/kbs-private.key".into()),
                 certificate: Some("/etc/kbs-cert.pem".into()),
+                client_ca_cert: None,
                 profile: TlsProfile::default(),
                 min_version: None,
                 max_version: None,

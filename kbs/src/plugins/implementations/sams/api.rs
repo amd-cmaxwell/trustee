@@ -69,3 +69,93 @@ pub fn get_auth_policy_handler(
 ) -> AuthorizationPolicyHandler {
     AuthorizationPolicyHandler::new(policy_engine, storage, mags_lock)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use key_value_storage::memory::MemoryKeyValueStorage;
+    use openssl::ec::{EcGroup, EcKey};
+    use openssl::nid::Nid;
+    use rstest::rstest;
+
+    fn memory_storage() -> Arc<dyn KeyValueStorage> {
+        Arc::new(MemoryKeyValueStorage::default())
+    }
+
+    fn memory_policy_engine() -> PolicyEngine<Regorus> {
+        PolicyEngine::<Regorus>::new(memory_storage())
+    }
+
+    fn test_ec_key() -> EcKey<openssl::pkey::Private> {
+        let group = EcGroup::from_curve_name(Nid::SECP384R1).unwrap();
+        EcKey::generate(&group).unwrap()
+    }
+
+    #[test]
+    fn test_get_request_handler_snp() {
+        let result = get_request_handler(
+            "measurement",
+            Tee::Snp,
+            Path::new("/dev/null"),
+            test_ec_key(),
+            false,
+            None,
+            Arc::new(Mutex::new(())),
+            memory_policy_engine(),
+            memory_policy_engine(),
+            memory_storage(),
+        );
+        if let Err(e) = result {
+            panic!("expected Ok, got Err: {e}");
+        }
+    }
+
+    #[rstest]
+    #[case(Tee::Tdx)]
+    #[case(Tee::Sgx)]
+    #[case(Tee::Cca)]
+    fn test_get_request_handler_unsupported_tee(#[case] tee: Tee) {
+        let result = get_request_handler(
+            "measurement",
+            tee,
+            Path::new("/dev/null"),
+            test_ec_key(),
+            false,
+            None,
+            Arc::new(Mutex::new(())),
+            memory_policy_engine(),
+            memory_policy_engine(),
+            memory_storage(),
+        );
+        match result {
+            Err(e) => assert!(
+                e.to_string().contains("unsupported TEE type"),
+                "unexpected: {e}"
+            ),
+            Ok(_) => panic!("expected error for unsupported TEE type"),
+        }
+    }
+
+    #[test]
+    fn test_get_request_handler_unsupported_type() {
+        let result = get_request_handler(
+            "unknown",
+            Tee::Snp,
+            Path::new("/dev/null"),
+            test_ec_key(),
+            false,
+            None,
+            Arc::new(Mutex::new(())),
+            memory_policy_engine(),
+            memory_policy_engine(),
+            memory_storage(),
+        );
+        match result {
+            Err(e) => assert!(
+                e.to_string().contains("unsupported request type"),
+                "unexpected: {e}"
+            ),
+            Ok(_) => panic!("expected error for unsupported request type"),
+        }
+    }
+}

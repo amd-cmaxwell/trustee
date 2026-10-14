@@ -162,3 +162,133 @@ impl SigningPolicyHandler {
         Ok(b"{}".to_vec())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use actix_web::http::header::{HeaderMap, HeaderName, HeaderValue};
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use key_value_storage::memory::MemoryKeyValueStorage;
+    use policy_engine::policy::rego::Regorus;
+    use policy_engine::PolicyEngine;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    #[test]
+    fn test_hash_cert_deterministic() {
+        let input = "some-certificate-data";
+        let h1 = hash_cert(input);
+        let h2 = hash_cert(input);
+        assert_eq!(h1, h2);
+        // SHA-384 produces 48 bytes = 96 hex characters
+        assert_eq!(h1.len(), 96);
+        assert!(h1.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn test_hash_cert_different_inputs() {
+        let h_a = hash_cert("a");
+        let h_b = hash_cert("b");
+        assert_ne!(h_a, h_b);
+    }
+
+    #[test]
+    fn test_signing_policy_id_format() {
+        let result = signing_policy_id("abc");
+        assert_eq!(result, "signing-policy-abc");
+    }
+
+    #[test]
+    fn test_extract_client_cert_present() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("x-client-cert"),
+            HeaderValue::from_static("my-cert-value"),
+        );
+        let result = extract_client_cert(&headers);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "my-cert-value");
+    }
+
+    #[test]
+    fn test_extract_client_cert_missing() {
+        let headers = HeaderMap::new();
+        let result = extract_client_cert(&headers);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("missing"),
+            "expected error to contain 'missing', got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_signing_policy_request_deserialize() {
+        let json = r#"{"signing_policy": "cG9saWN5"}"#;
+        let req: SigningPolicyRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.signing_policy, "cG9saWN5");
+    }
+
+    #[tokio::test]
+    async fn test_register_signing_policy_success() {
+        let storage = Arc::new(MemoryKeyValueStorage::default());
+        let engine = PolicyEngine::<Regorus>::new(storage);
+        let handler = SigningPolicyHandler::new(engine, None, Arc::new(Mutex::new(())));
+
+        let rego = "package policy\ndefault allow = true";
+        let encoded = STANDARD.encode(rego);
+        let body = serde_json::to_vec(&serde_json::json!({
+            "signing_policy": encoded
+        }))
+        .unwrap();
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("x-client-cert"),
+            HeaderValue::from_static("test-cert"),
+        );
+
+        let result = handler.register_signing_policy(&headers, &body).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), b"{}");
+    }
+
+    #[tokio::test]
+    async fn test_register_signing_policy_missing_header() {
+        let storage = Arc::new(MemoryKeyValueStorage::default());
+        let engine = PolicyEngine::<Regorus>::new(storage);
+        let handler = SigningPolicyHandler::new(engine, None, Arc::new(Mutex::new(())));
+
+        let body = b"{}";
+        let headers = HeaderMap::new();
+
+        let result = handler.register_signing_policy(&headers, body).await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("missing"),
+            "expected error to contain 'missing', got: {err_msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_revoke_signing_key_no_rvps() {
+        let storage = Arc::new(MemoryKeyValueStorage::default());
+        let engine = PolicyEngine::<Regorus>::new(storage);
+        let handler = SigningPolicyHandler::new(engine, None, Arc::new(Mutex::new(())));
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("x-client-cert"),
+            HeaderValue::from_static("test-cert"),
+        );
+
+        let result = handler.revoke_signing_key(&headers, "dGVzdA==").await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("RVPS is not configured"),
+            "expected error to contain 'RVPS is not configured', got: {err_msg}"
+        );
+    }
+}
