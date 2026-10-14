@@ -71,6 +71,7 @@ All under `/kbs/v0/sams/`. Guest-owner endpoints use mTLS.
 |---|---|---|
 | `POST /measurement/<tee>/` | None | Compute measurement (+ ID Block if metadata provided) |
 | `POST /measurement/<tee>/auth` | Bearer (optional) | Signed ID Block + IdAuth |
+| `GET /signing/identity-provider` | None | Discover CA URL for obtaining mTLS client certificates |
 | `POST /signing/policy` | mTLS | Register guest-owner signing-policy |
 | `DELETE /signing/policy` | mTLS | Revoke signing-policy + certs from RVPS |
 | `DELETE /signing/key/<digest>` | mTLS | Revoke specific key endorsement |
@@ -88,9 +89,11 @@ RCAR protocol, KBS resource policy engine, CDH / guest-components.
 
 ## Use w/ Kata-CoCo
 Guest Owners who wish to run confidential workloads with pre-verification should:
-1. Obtain an mTLS client certificate from the CA that SAMS is configured to trust (ask your Trustee admin)
-2. **Then from a trusted environment,** register a signing-policy with SAMS over mTLS via `POST /kbs/v0/sams/signing/policy`
-3. Finally, add these annotations to their pods & run `kubectl rollout restart`:
+1. Obtain an mTLS client certificate from the CA that SAMS is configured to trust
+    - **Work with your Trustee admin to obtain an appropriate certificate.**
+    - If Trustee has been configured to use a TLS certificate issued by a commerical/automated identify provider, then guest-owners can query the `GET /sams/signing/identity-provider` endpoint to obtain the URL of the issuing certificate authority.
+2. **From a trusted environment,** register a signing-policy with SAMS over mTLS via `POST /kbs/v0/sams/signing/policy`
+3. Finally, add these annotations to their pods on the Untrusted Host & run `kubectl rollout restart`:
    - `"io.katacontainers.config.requirePreVerification": "true"`
    - `"io.katacontainers.config.guestOwnerIdentity": "<base64 of mTLS client cert>"`
 

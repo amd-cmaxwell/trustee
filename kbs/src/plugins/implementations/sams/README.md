@@ -100,6 +100,24 @@ Primary endpoint for Kata Runtime at CVM launch. Like `/measurement/<tee>/` but 
 
 ---
 
+### GET /signing/identity-provider
+#### Description:
+Returns the URL of the Certificate Authority that issues mTLS client certificates for SAMS. Guest-owners use this to programmatically discover where to submit CSRs for obtaining mTLS certificates.
+#### Requires Admin?
+- No
+#### Response:
+```json
+{"certificate_authority_url": "https://ca.example.com/v1/sign"}
+```
+#### Error Codes:
+- `404` — identity provider URL is not configured and could not be derived from the mTLS CA certificate
+#### How the URL is resolved:
+1. If `identity_provider_url` is set in `SamsConfig`, that value is used directly
+2. Otherwise, if `tls_client_ca_cert` is configured in the KBS TLS config, SAMS parses the CA certificate's Authority Information Access (AIA) extension and extracts the CA Issuers URL
+3. If neither source provides a URL, the endpoint returns 404
+
+---
+
 ### POST /signing/policy
 #### Description:
 Guest-owner registers a Rego signing-policy that maps launch params to signing keypairs. Private keys stay in Trustee.
