@@ -198,6 +198,7 @@ impl PluginsConfig {
     pub async fn into_client_plugin_instance(
         self,
         storage_provider: Arc<dyn StorageProvider>,
+        client_ca_cert: Option<&std::path::Path>,
     ) -> Result<ClientPluginInstance> {
         let plugin = match self {
             PluginsConfig::Sample(cfg) => {
@@ -238,7 +239,7 @@ impl PluginsConfig {
             }
             #[cfg(feature = "sams")]
             PluginsConfig::Sams(cfg) => {
-                let sams = Sams::new(cfg, storage_provider)
+                let sams = Sams::new(cfg, storage_provider, client_ca_cert)
                     .await
                     .context("Initialize 'SAMS' plugin failed")?;
                 Arc::new(sams) as _
@@ -260,12 +261,13 @@ impl PluginManager {
     pub async fn new(
         value: Vec<PluginsConfig>,
         storage_provider: Arc<dyn StorageProvider>,
+        client_ca_cert: Option<&std::path::Path>,
     ) -> Result<Self> {
         let mut plugins = HashMap::new();
         for cfg in value {
             let name = cfg.to_string();
             let plugin: ClientPluginInstance = cfg
-                .into_client_plugin_instance(storage_provider.clone())
+                .into_client_plugin_instance(storage_provider.clone(), client_ca_cert)
                 .await?;
             plugins.insert(name, plugin);
         }

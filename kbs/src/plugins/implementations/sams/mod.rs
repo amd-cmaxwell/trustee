@@ -23,6 +23,8 @@ use sev::measurement::idblock_types::SevEcdsaPubKey;
 use sev::parser::ByteParser;
 use tokio::sync::Mutex;
 
+use openssl::x509::X509;
+
 use super::super::plugin_manager::{AuthMode, ClientPlugin, PluginHttpError};
 
 mod api;
@@ -70,6 +72,7 @@ impl Sams {
     pub async fn new(
         config: SamsConfig,
         storage_provider: Arc<dyn StorageProvider>,
+        client_ca_cert: Option<&std::path::Path>,
     ) -> Result<Self> {
         let storage = storage_provider.get_or_register("sams").await?;
         let signing_policy_storage = storage_provider
@@ -110,6 +113,12 @@ impl Sams {
             client.register(serde_json::to_string(&message)?).await?;
         }
 
+        let identity_provider_url = config.identity_provider_url.or_else(|| {
+            let pem = std::fs::read(client_ca_cert?).ok()?;
+            let cert = X509::from_pem(&pem).ok()?;
+            extract_ca_issuers_url(&cert)
+        });
+
         Ok(Self {
             ovmf_file: config.ovmf_file,
             id_key,
@@ -119,9 +128,16 @@ impl Sams {
             auth_policy_engine: policy_engine,
             signing_policy_engine,
             storage,
-            identity_provider_url: config.identity_provider_url,
+            identity_provider_url,
         })
     }
+}
+
+fn extract_ca_issuers_url(cert: &X509) -> Option<String> {
+    let aia = cert.authority_info()?;
+    aia.iter()
+        .find(|ad| ad.method().to_string() == "CA Issuers")
+        .and_then(|ad| ad.location().uri().map(String::from))
 }
 
 fn tee_from_path(tee_str: &str) -> Result<Tee> {
@@ -183,7 +199,9 @@ impl ClientPlugin for Sams {
                 handler.handle(body, &empty_headers).await
             }
             ("GET", ["signing", "identity-provider"]) => match &self.identity_provider_url {
-                Some(url) => Ok(serde_json::to_vec(&serde_json::json!({ "certificate_authority_url": url }))?),
+                Some(url) => Ok(serde_json::to_vec(
+                    &serde_json::json!({ "certificate_authority_url": url }),
+                )?),
                 None => Err(PluginHttpError::not_found(
                     "identity provider URL is not configured",
                 )),
@@ -443,6 +461,60 @@ mod tests {
         let mut sams = build_test_sams().await;
         sams.identity_provider_url = Some(url.to_string());
         sams
+    }
+
+    #[test]
+    fn test_extract_ca_issuers_url_no_aia() {
+        let cert = generate_self_signed_cert(None);
+        assert!(extract_ca_issuers_url(&cert).is_none());
+    }
+
+    #[test]
+    fn test_extract_ca_issuers_url_with_aia() {
+        let cert = generate_self_signed_cert(Some("https://ca.example.com/issuer"));
+        let url = extract_ca_issuers_url(&cert).unwrap();
+        assert_eq!(url, "https://ca.example.com/issuer");
+    }
+
+    #[allow(deprecated)]
+    fn generate_self_signed_cert(ca_issuers_uri: Option<&str>) -> X509 {
+        use openssl::asn1::Asn1Time;
+        use openssl::bn::BigNum;
+        use openssl::ec::{EcGroup, EcKey};
+        use openssl::hash::MessageDigest;
+        use openssl::nid::Nid;
+        use openssl::pkey::PKey;
+        use openssl::x509::{X509Builder, X509Extension, X509NameBuilder};
+
+        let group = EcGroup::from_curve_name(Nid::SECP384R1).unwrap();
+        let key = EcKey::generate(&group).unwrap();
+        let pkey = PKey::from_ec_key(key).unwrap();
+        let mut name_builder = X509NameBuilder::new().unwrap();
+        name_builder.append_entry_by_text("CN", "test-ca").unwrap();
+        let name = name_builder.build();
+        let mut builder = X509Builder::new().unwrap();
+        builder.set_version(2).unwrap();
+        builder
+            .set_serial_number(&BigNum::from_u32(1).unwrap().to_asn1_integer().unwrap())
+            .unwrap();
+        builder.set_subject_name(&name).unwrap();
+        builder.set_issuer_name(&name).unwrap();
+        builder.set_pubkey(&pkey).unwrap();
+        builder
+            .set_not_before(&Asn1Time::days_from_now(0).unwrap())
+            .unwrap();
+        builder
+            .set_not_after(&Asn1Time::days_from_now(365).unwrap())
+            .unwrap();
+
+        if let Some(uri) = ca_issuers_uri {
+            let value = format!("caIssuers;URI:{uri}");
+            let ext = X509Extension::new(None, None, "authorityInfoAccess", &value).unwrap();
+            builder.append_extension(ext).unwrap();
+        }
+
+        builder.sign(&pkey, MessageDigest::sha384()).unwrap();
+        builder.build()
     }
 
     #[test]

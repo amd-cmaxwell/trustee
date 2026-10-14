@@ -118,9 +118,13 @@ impl ApiServer {
             "KBS storage backend"
         );
 
-        let plugin_manager = PluginManager::new(config.plugins.clone(), storage_provider.clone())
-            .await
-            .map_err(|e| Error::PluginManagerInitialization { source: e })?;
+        let plugin_manager = PluginManager::new(
+            config.plugins.clone(),
+            storage_provider.clone(),
+            config.http_server.tls.client_ca_cert.as_deref(),
+        )
+        .await
+        .map_err(|e| Error::PluginManagerInitialization { source: e })?;
         let token_verifier = TokenVerifier::from_config(config.attestation_token.clone()).await?;
 
         let policy_storage_backend = storage_provider
