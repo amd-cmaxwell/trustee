@@ -42,6 +42,14 @@ impl PluginHttpError {
         }
         .into()
     }
+
+    pub fn not_found(message: impl Into<String>) -> anyhow::Error {
+        Self {
+            status: 404,
+            message: message.into(),
+        }
+        .into()
+    }
 }
 
 pub enum AuthMode {

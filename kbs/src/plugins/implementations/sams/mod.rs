@@ -23,7 +23,7 @@ use sev::measurement::idblock_types::SevEcdsaPubKey;
 use sev::parser::ByteParser;
 use tokio::sync::Mutex;
 
-use super::super::plugin_manager::{AuthMode, ClientPlugin};
+use super::super::plugin_manager::{AuthMode, ClientPlugin, PluginHttpError};
 
 mod api;
 use api::RequestHandler;
@@ -50,6 +50,8 @@ pub struct SamsConfig {
     pub id_key_file: PathBuf,
     #[serde(default)]
     pub rvps: Option<SamsRvpsConfig>,
+    #[serde(default)]
+    pub identity_provider_url: Option<String>,
 }
 
 pub struct Sams {
@@ -61,6 +63,7 @@ pub struct Sams {
     auth_policy_engine: PolicyEngine<Regorus>,
     signing_policy_engine: PolicyEngine<Regorus>,
     storage: Arc<dyn key_value_storage::KeyValueStorage>,
+    identity_provider_url: Option<String>,
 }
 
 impl Sams {
@@ -116,6 +119,7 @@ impl Sams {
             auth_policy_engine: policy_engine,
             signing_policy_engine,
             storage,
+            identity_provider_url: config.identity_provider_url,
         })
     }
 }
@@ -178,6 +182,12 @@ impl ClientPlugin for Sams {
                 );
                 handler.handle(body, &empty_headers).await
             }
+            ("GET", ["signing", "identity-provider"]) => match &self.identity_provider_url {
+                Some(url) => Ok(serde_json::to_vec(&serde_json::json!({ "certificate_authority_url": url }))?),
+                None => Err(PluginHttpError::not_found(
+                    "identity provider URL is not configured",
+                )),
+            },
             _ => bail!("unsupported: {} /kbs/v0/sams/{}", method, path.join("/")),
         }
     }
@@ -296,6 +306,7 @@ mod tests {
         assert_eq!(cfg.ovmf_file, PathBuf::from("/path/to/ovmf.fd"));
         assert_eq!(cfg.id_key_file, PathBuf::from("/path/to/id.pem"));
         assert!(cfg.rvps.is_none());
+        assert!(cfg.identity_provider_url.is_none());
     }
 
     #[test]
@@ -424,6 +435,63 @@ mod tests {
             auth_policy_engine: policy_engine,
             signing_policy_engine,
             storage,
+            identity_provider_url: None,
         }
+    }
+
+    async fn build_test_sams_with_idp(url: &str) -> Sams {
+        let mut sams = build_test_sams().await;
+        sams.identity_provider_url = Some(url.to_string());
+        sams
+    }
+
+    #[test]
+    fn test_sams_config_with_identity_provider() {
+        let toml_str = r#"
+            ovmf_file = "/path/to/ovmf.fd"
+            id_key_file = "/path/to/id.pem"
+            identity_provider_url = "https://ca.example.com/v1/sign"
+        "#;
+        let cfg: SamsConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            cfg.identity_provider_url.as_deref(),
+            Some("https://ca.example.com/v1/sign")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handle_identity_provider_configured() {
+        let sams = build_test_sams_with_idp("https://ca.example.com").await;
+        let result = sams
+            .handle(
+                b"",
+                &HashMap::new(),
+                &["signing", "identity-provider"],
+                &Method::GET,
+                None,
+            )
+            .await
+            .unwrap();
+        let resp: serde_json::Value = serde_json::from_slice(&result).unwrap();
+        assert_eq!(resp["certificate_authority_url"], "https://ca.example.com");
+    }
+
+    #[tokio::test]
+    async fn test_handle_identity_provider_not_configured() {
+        let sams = build_test_sams().await;
+        let err = sams
+            .handle(
+                b"",
+                &HashMap::new(),
+                &["signing", "identity-provider"],
+                &Method::GET,
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("not configured"),
+            "unexpected: {err}"
+        );
     }
 }
