@@ -446,12 +446,15 @@ sequenceDiagram
 The SNP Verifier validates the attestation report in three stages: first, it verifies the
 AMD certificate chain (hardware endorsement); second, it checks that the hashes of the
 provided initdata and runtimedata match the HOST_DATA and REPORT_DATA fields in the report.
-The verifier now extracts additional claims from the report: `id_key_digest`,
-`author_key_digest`, `author_key_en`, `family_id`, `image_id`, and `guest_svn`.
+The verifier now extracts additional claims from the report: `id_block_en`,
+`id_key_digest`, `author_key_digest`, `author_key_en`, `family_id`, `image_id`,
+and `guest_svn`. `id_block_en` is a derived boolean that is `true` when the
+report's `id_key_digest` is not all zeros.
 
-Before policy evaluation, the EAR token broker verifies SAMS key endorsement by retrieving
-the SAMS IDKey public key (`"sams-id-key"`) from RVPS, computing its SHA-384 digest, and
-comparing it against the `id_key_digest` claim from the report. If `author_key_en` is true,
+Before policy evaluation, when `id_block_en` is `true`, the EAR token broker verifies
+SAMS key endorsement by retrieving the SAMS IDKey public key (`"sams-id-key"`) from RVPS,
+computing its SHA-384 digest, and comparing it against the `id_key_digest` claim from the
+report. If `author_key_en` is true,
 the broker also checks whether the `author_key_digest` exists in the `"guest-owner-pubkeys"`
 map in RVPS. The results are injected as `sams_id_key_endorsed` and `author_key_endorsed`
 boolean claims, available to the policy engine for trust decisions.
@@ -470,9 +473,9 @@ the Minimum Acceptable Guest SVN (MAGS) from RVPS, check the `sams_id_key_endors
 adjusts the trust claims at a severity determined by the Verifier Policy Owner. The final
 result is an EAR token encoding the TEE's trustworthiness vector.
 
-> **TODO:** `ear_default_policy_cpu.rego` needs to be updated to set the trustworthiness
-> vector status to "warning" or "contraindicated" when `sams_id_key_endorsed` or
-> `author_key_endorsed` is false.
+The default EAR policy (`ear_default_policy_cpu.rego`) now includes a SAMS-specific
+SNP rule that requires `id_block_en`, `sams_id_key_endorsed`, `author_key_endorsed`,
+and `guest_svn >= snp_minimum_acceptable_guest_svn` for an `executables` score of 3.
 
 ```mermaid
 sequenceDiagram

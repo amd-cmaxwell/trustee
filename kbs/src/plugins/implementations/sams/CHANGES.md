@@ -80,10 +80,11 @@ All under `/kbs/v0/sams/`. Guest-owner endpoints use mTLS.
 
 RCAR protocol, KBS resource policy engine, CDH / guest-components.
 
-> **Note:** The SNP verifier now emits additional claims (`id_key_digest`,
-> `author_key_digest`, `family_id`, `image_id`, `guest_svn`) and the EAR token
-> broker performs key endorsement checks before policy evaluation. These are
-> additive — existing policies and flows are unaffected.
+> **Note:** The SNP verifier now emits additional claims (`id_block_en`,
+> `id_key_digest`, `author_key_digest`, `family_id`, `image_id`, `guest_svn`)
+> and the EAR token broker performs key endorsement checks (gated on
+> `id_block_en`) before policy evaluation. These are additive — existing
+> policies and flows are unaffected.
 
 ## Use w/ Kata-CoCo
 Guest Owners who wish to run confidential workloads with pre-verification should:

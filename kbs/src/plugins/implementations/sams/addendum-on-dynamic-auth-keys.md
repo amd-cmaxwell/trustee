@@ -126,8 +126,8 @@ Doing so will trigger SAMS to evaluate the Guest Owner's signing-policy and use 
         10. **Store the guest-owner's public signing key in the RVPS `"guest-owner-pubkeys"` map**, keyed by AuthKeyDigest (so verifiers can retrieve the full public key from the digest in the attestation report)
         
 ### Verifying an Attestation Report
-- The SNP verifier now emits `id_key_digest`, `author_key_digest`, `author_key_en`, `family_id`, `image_id`, and `guest_svn` as claims from the attestation report.
-- Before policy evaluation, the EAR token broker automatically verifies key endorsement:
+- The SNP verifier now emits `id_block_en`, `id_key_digest`, `author_key_digest`, `author_key_en`, `family_id`, `image_id`, and `guest_svn` as claims from the attestation report. `id_block_en` is a derived boolean that is `true` when the report's `id_key_digest` is not all zeros.
+- Before policy evaluation, the EAR token broker automatically verifies key endorsement (only when `id_block_en` is `true`):
     - It retrieves the SAMS IDKey public key from RVPS (`"sams-id-key"`), computes its SHA-384 digest, and compares it against the report's `id_key_digest`. The result is injected as a `sams_id_key_endorsed` boolean claim.
     - If `author_key_en` is true, the broker checks whether `author_key_digest` exists as a key in the RVPS `"guest-owner-pubkeys"` map. The result is injected as an `author_key_endorsed` boolean claim.
     - If `author_key_en` is true, the broker also retrieves the guest-owner's mTLS certificates from RVPS (`"guest-owner-certs"` list for the AuthKeyDigest), parses each PEM certificate into a structured JSON object, and injects them as `guest_owner_certs` in the claims. Each object contains `subject`, `issuer`, `serial`, `not_before`, `not_after`, and `extensions` fields.

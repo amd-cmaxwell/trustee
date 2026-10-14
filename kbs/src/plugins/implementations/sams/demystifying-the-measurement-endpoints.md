@@ -10,14 +10,14 @@ None
 ```json
 {
     vcpus: <Number of CPUs available to the CVM as a u32>,
-    vcpu_type: "<The Codename identifying the CPU Generation of the Host>",
-    vmm_type: "<The Type of Virtual Machine (Hypervisor Specific) to be launched>",
+    vcpu_type: "<CpuType enum variant identifying the CPU generation, e.g. EPYC, EpycV1, EpycV2, ...>",
+    vmm_type: "<VMMType enum variant identifying the hypervisor, e.g. QEMU, EC2, KRUN>",
     guest_features: <Kernel Guest Features Bitflag as a u64>,
     ovmf_hash_str: "<Precalculated Cryptographic Hash of the OpenVM Firmware file the hypervisor will use to launch the CVM>",
     initrd_hash_str: "<Precalculated Cryptographic Hash of the initial filesystem the CVM will use>",
     kernel_hash_str: "<Precalculated Cryptographic Hash of the kernel file the CVM will use>",
     append: "<Kernel Cmdline Arguments...>",
-    guest_policy: <Guest Policy Bitflag as a u32>,
+    guest_policy: <Guest Policy bitflag as an integer>,
     family_id: "<String Identifying which group to which the ID Block belongs (16 bytes max)",
     image_id: "<String Identifying which CVM the ID Block belongs (16 bytes max)",
 }
@@ -63,14 +63,14 @@ the response body contains:
 ```json
 {
     vcpus: <Number of CPUs available to the CVM as a u32>,
-    vcpu_type: "<The Codename identifying the CPU Generation of the Host>",
-    vmm_type: "<The Type of Virtual Machine (Hypervisor Specific) to be launched>",
+    vcpu_type: "<CpuType enum variant identifying the CPU generation, e.g. EPYC, EpycV1, EpycV2, ...>",
+    vmm_type: "<VMMType enum variant identifying the hypervisor, e.g. QEMU, EC2, KRUN>",
     guest_features: <Kernel Guest Features Bitflag as a u64>,
     ovmf_hash_str: "<Precalculated Cryptographic Hash of the OpenVM Firmware file the hypervisor will use to launch the CVM>",
     initrd_hash_str: "<Precalculated Cryptographic Hash of the initial filesystem the CVM will use>",
     kernel_hash_str: "<Precalculated Cryptographic Hash of the kernel file the CVM will use>",
     append: "<Kernel Cmdline Arguments...>",
-    guest_policy: <Guest Policy Bitflag as a u32>,
+    guest_policy: <Guest Policy bitflag as an integer>,
     family_id: "<String Identifying which group to which the ID Block belongs (16 bytes max)",
     image_id: "<String Identifying which CVM the ID Block belongs (16 bytes max)",
 }
