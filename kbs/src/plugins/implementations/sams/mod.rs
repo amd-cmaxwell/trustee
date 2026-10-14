@@ -48,7 +48,6 @@ pub enum SamsRvpsConfig {
 
 #[derive(Deserialize, Clone, Debug, PartialEq)]
 pub struct SamsConfig {
-    pub ovmf_file: PathBuf,
     pub id_key_file: PathBuf,
     #[serde(default)]
     pub rvps: Option<SamsRvpsConfig>,
@@ -57,7 +56,6 @@ pub struct SamsConfig {
 }
 
 pub struct Sams {
-    ovmf_file: PathBuf,
     id_key: EcKey<Private>,
     rvps_client: Option<Arc<dyn RvpsClient>>,
     rvps_certs_lock: Arc<Mutex<()>>,
@@ -120,7 +118,6 @@ impl Sams {
         });
 
         Ok(Self {
-            ovmf_file: config.ovmf_file,
             id_key,
             rvps_client,
             rvps_certs_lock: Arc::new(Mutex::new(())),
@@ -159,7 +156,6 @@ impl Sams {
         let mut handler = api::get_request_handler(
             endpoint,
             tee,
-            &self.ovmf_file,
             self.id_key.clone(),
             is_auth,
             self.rvps_client.clone(),
@@ -317,11 +313,9 @@ mod tests {
     #[test]
     fn test_sams_config_minimal_toml() {
         let toml_str = r#"
-            ovmf_file = "/path/to/ovmf.fd"
             id_key_file = "/path/to/id.pem"
         "#;
         let cfg: SamsConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(cfg.ovmf_file, PathBuf::from("/path/to/ovmf.fd"));
         assert_eq!(cfg.id_key_file, PathBuf::from("/path/to/id.pem"));
         assert!(cfg.rvps.is_none());
         assert!(cfg.identity_provider_url.is_none());
@@ -330,7 +324,6 @@ mod tests {
     #[test]
     fn test_sams_config_grpc_rvps() {
         let toml_str = r#"
-            ovmf_file = "/path/to/ovmf.fd"
             id_key_file = "/path/to/id.pem"
 
             [rvps]
@@ -349,7 +342,6 @@ mod tests {
     #[test]
     fn test_sams_config_builtin_rvps_default_storage() {
         let toml_str = r#"
-            ovmf_file = "/path/to/ovmf.fd"
             id_key_file = "/path/to/id.pem"
 
             [rvps]
@@ -367,7 +359,7 @@ mod tests {
     #[test]
     fn test_sams_config_missing_required_field() {
         let toml_str = r#"
-            id_key_file = "/path/to/id.pem"
+            identity_provider_url = "https://ca.example.com"
         "#;
         assert!(toml::from_str::<SamsConfig>(toml_str).is_err());
     }
@@ -445,7 +437,6 @@ mod tests {
             PolicyEngine::<Regorus>::new(Arc::new(MemoryKeyValueStorage::default()));
 
         Sams {
-            ovmf_file: PathBuf::from("/dev/null"),
             id_key,
             rvps_client: None,
             rvps_certs_lock: Arc::new(Mutex::new(())),
@@ -520,7 +511,6 @@ mod tests {
     #[test]
     fn test_sams_config_with_identity_provider() {
         let toml_str = r#"
-            ovmf_file = "/path/to/ovmf.fd"
             id_key_file = "/path/to/id.pem"
             identity_provider_url = "https://ca.example.com/v1/sign"
         "#;

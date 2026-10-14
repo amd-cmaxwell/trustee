@@ -1,9 +1,7 @@
 - ~~Currently we need to include the URI to the RVPS in the SAMS Plugin section of the KBS Config file~~
     - **Resolved:** SAMS now supports both `Grpc` (remote RVPS address) and `Builtin` (in-process RVPS) modes via the `SamsRvpsConfig` enum. RVPS config is optional; omitting it disables RVPS features.
-- Currently we need to include the path to a base OVMF file in the SAMS Plugin section of the KBS Config file, which SAMS will use to calculate launch measurements. 
-    - Need to investigate supply chain for such an OVMF file
-        - Maybe we package an OVMF into the KBS image every trustee release?
-        - Is it possible to eliminate the need for an OVMF file altogether?
+- ~~Currently we need to include the path to a base OVMF file in the SAMS Plugin section of the KBS Config file, which SAMS will use to calculate launch measurements.~~
+    - **Resolved:** Clients now send a base64-encoded `OvmfMeasurement` (containing the OVMF metadata and launch digest) in the request body. SAMS no longer requires a local OVMF file. The `OvmfMeasurement` can be produced from an OVMF file using `get_snp_ovmf_measurement()` from the `sev` crate.
 - SAMS mTLS Cert & RootCA files will need to be rotated from time to time. 
     - Need to facilite mTLS cert rotation in an easy-to-rollover manner.
         - This is likely to be out of scope for SAMS itself & would be the trustee deployers' responsibility to use an external_secrets operator inside of their trustee k8s cluster.

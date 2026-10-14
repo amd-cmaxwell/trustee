@@ -64,7 +64,7 @@ Computes a launch measurement from CVM parameters. Optionally returns a signed I
 #### Request Params:
 - A JSON Object containing:
 1. All params required to create a Launch Measurement (e.g. vcpus, vcpu_type, vmm_type, guest_features, append)
-2. Precomputed hashes of the Kernel, Initrd, & OVMF (e.g. kernel_hash_str, initrd_hash_str, ovmf_hash_str)
+2. An `ovmf_measurement` field containing a base64-encoded `OvmfMeasurement` (produced by `get_snp_ovmf_measurement()` from the `sev` crate), plus optional precomputed hashes for kernel and initrd (e.g. kernel_hash_str, initrd_hash_str)
 3. [Optional] IDBlock Metadata: FAMILY_ID, IMAGE_ID, & GUEST_POLICY
 
 #### Response (progressive):
@@ -296,9 +296,6 @@ full design rationale.
 >> This facilitates allowing Kata-Runtime to confirm that the IDBlock, IDBlockSig, & IDKey SAMS returns actually match.
 >> Note: This check already happens in the SNP Firmware, but for completeness sake this functionality should also be exposed in the `sev` crate.
 
-> **TODO** Need to update `sev` crate to be able to compute Launch Measurements when provided with KernelHashes, Initrd Hashes, & OVMF Hashes in addition to files.
->> This facilitates Kata-Runtime sending SAMS hashes instead of large files.
-
 ```mermaid
 sequenceDiagram
     participant kata_runtime as Kata Runtime<br>(on Untrusted Host)
@@ -313,7 +310,7 @@ sequenceDiagram
         kata_runtime ->> api: POST /measurement/snp<br>or POST /measurement/snp/auth
         api ->> sams: Forward request
 
-        note over kata_runtime, sams: LaunchParams = {vcpus, ovmf_hash,<br>kernel_hash, initrd_hash, ...}
+        note over kata_runtime, sams: LaunchParams = {vcpus, ovmf_measurement,<br>kernel_hash, initrd_hash, ...}
         note over kata_runtime, sams: ID Block Metadata = {family_id,<br>image_id, guest_policy}
 
         opt Pre-Verification against RVPS (authorization policy)

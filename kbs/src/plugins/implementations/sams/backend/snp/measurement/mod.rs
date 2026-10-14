@@ -1,7 +1,6 @@
 pub mod auth;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use actix_web::http::header::HeaderMap;
@@ -21,6 +20,7 @@ use sev::firmware::guest::GuestPolicy;
 use sev::measurement::idblock_types::{
     FamilyId, IdAuth, IdBlock, ImageId, SevEcdsaPubKey, DEFAULT_KEY_ALGO,
 };
+use sev::measurement::ovmf::OvmfMeasurement;
 use sev::measurement::snp::{snp_calc_launch_digest, SnpMeasurementArgs};
 use sev::measurement::vcpu_types::CpuType;
 use sev::measurement::vmsa::{GuestFeatures, VMMType};
@@ -46,7 +46,7 @@ pub struct SnpMeasurementRequest {
     #[serde(default)]
     pub vmm_type: Option<VMMType>,
     pub guest_features: GuestFeatures,
-    pub ovmf_hash_str: String,
+    pub ovmf_measurement: OvmfMeasurement,
     #[serde(default)]
     pub kernel_hash_str: Option<String>,
     #[serde(default)]
@@ -140,7 +140,6 @@ pub async fn read_rvps_pubkeys_map(client: &dyn RvpsClient) -> Result<HashMap<St
 }
 
 pub struct MeasurementHandler {
-    ovmf_file: PathBuf,
     id_key: EcKey<Private>,
     is_auth: bool,
     rvps_client: Option<Arc<dyn RvpsClient>>,
@@ -153,7 +152,6 @@ pub struct MeasurementHandler {
 impl MeasurementHandler {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        ovmf_file: PathBuf,
         id_key: EcKey<Private>,
         is_auth: bool,
         rvps_client: Option<Arc<dyn RvpsClient>>,
@@ -163,7 +161,6 @@ impl MeasurementHandler {
         storage: Arc<dyn KeyValueStorage>,
     ) -> Self {
         Self {
-            ovmf_file,
             id_key,
             is_auth,
             rvps_client,
@@ -259,15 +256,16 @@ impl RequestHandler for MeasurementHandler {
         let args = SnpMeasurementArgs {
             vcpus: req.vcpus,
             vcpu_type: req.vcpu_type,
-            ovmf_file: self.ovmf_file.clone(),
+            ovmf_file: None,
             guest_features: req.guest_features,
             kernel_file: None,
             initrd_file: None,
             append: req.append.as_deref(),
-            ovmf_hash_str: Some(req.ovmf_hash_str.as_str()),
+            ovmf_hash_str: None,
             vmm_type: req.vmm_type,
             kernel_hash_str: req.kernel_hash_str.as_deref(),
             initrd_hash_str: req.initrd_hash_str.as_deref(),
+            ovmf_measurement: Some(req.ovmf_measurement.clone()),
         };
 
         let digest = snp_calc_launch_digest(args)
@@ -529,11 +527,10 @@ mod tests {
             "vcpus": 4,
             "vcpu_type": "EpycV4",
             "guest_features": 1,
-            "ovmf_hash_str": "abcdef0123456789"
+            "ovmf_measurement": dummy_ovmf_measurement_b64()
         });
         let req: SnpMeasurementRequest = serde_json::from_value(json).unwrap();
         assert_eq!(req.vcpus, 4);
-        assert_eq!(req.ovmf_hash_str, "abcdef0123456789");
         assert!(req.vmm_type.is_none());
         assert!(req.kernel_hash_str.is_none());
         assert!(req.initrd_hash_str.is_none());
@@ -550,7 +547,7 @@ mod tests {
             "vcpu_type": "EpycV4",
             "vmm_type": "QEMU",
             "guest_features": 1,
-            "ovmf_hash_str": "abcdef",
+            "ovmf_measurement": dummy_ovmf_measurement_b64(),
             "kernel_hash_str": "112233",
             "initrd_hash_str": "445566",
             "append": "console=ttyS0",
@@ -614,12 +611,16 @@ mod tests {
 
     // --- MeasurementHandler ---
 
+    fn dummy_ovmf_measurement_b64() -> String {
+        use base64::Engine;
+        STANDARD.encode([0u8, 0, 0, 0, 0])
+    }
+
     #[tokio::test]
     async fn test_measurement_handler_auth_missing_required_fields() {
         let id_key = test_ec_key();
         let storage = memory_storage();
         let mut handler = MeasurementHandler::new(
-            PathBuf::from("/dev/null"),
             id_key,
             true,
             None,
@@ -633,7 +634,7 @@ mod tests {
             "vcpus": 4,
             "vcpu_type": "EpycV4",
             "guest_features": 1,
-            "ovmf_hash_str": "abcdef0123456789"
+            "ovmf_measurement": dummy_ovmf_measurement_b64()
         });
         let body = serde_json::to_vec(&req).unwrap();
         let headers = actix_web::http::header::HeaderMap::new();

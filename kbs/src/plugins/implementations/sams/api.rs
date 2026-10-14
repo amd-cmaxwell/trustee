@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::sync::Arc;
 
 use actix_web::http::header::HeaderMap;
@@ -37,7 +36,6 @@ impl RequestHandler for MeasurementHandler {
 pub fn get_request_handler(
     req_type: &str,
     tee: Tee,
-    ovmf_file: &Path,
     id_key: EcKey<Private>,
     is_auth: bool,
     rvps_client: Option<Arc<dyn RvpsClient>>,
@@ -48,7 +46,6 @@ pub fn get_request_handler(
 ) -> Result<MeasurementHandler> {
     match (req_type, tee) {
         ("measurement", Tee::Snp) => Ok(MeasurementHandler::Snp(SnpMeasurementHandler::new(
-            ovmf_file.to_path_buf(),
             id_key,
             is_auth,
             rvps_client,
@@ -96,7 +93,6 @@ mod tests {
         let result = get_request_handler(
             "measurement",
             Tee::Snp,
-            Path::new("/dev/null"),
             test_ec_key(),
             false,
             None,
@@ -118,7 +114,6 @@ mod tests {
         let result = get_request_handler(
             "measurement",
             tee,
-            Path::new("/dev/null"),
             test_ec_key(),
             false,
             None,
@@ -141,7 +136,6 @@ mod tests {
         let result = get_request_handler(
             "unknown",
             Tee::Snp,
-            Path::new("/dev/null"),
             test_ec_key(),
             false,
             None,
