@@ -9,6 +9,7 @@ use anyhow::{anyhow, Context, Result};
 use crate::plugins::implementations::sams::rvps_client::RvpsClient;
 use crate::plugins::plugin_manager::PluginHttpError;
 use base64::{engine::general_purpose::STANDARD, Engine};
+use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use openssl::ec::EcKey;
 use openssl::pkey::Private;
 use policy_engine::policy::rego::Regorus;
@@ -64,10 +65,16 @@ pub struct SnpMeasurementRequest {
 }
 
 #[derive(Serialize)]
-pub struct Cage {
+pub struct CageTokenClaims {
+    pub id_block: serde_json::Value,
+    pub id_auth: serde_json::Value,
     pub mage: u32,
-    pub id_block_hash: String,
-    pub signature: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub certificate: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub guest_owner_key: Option<String>,
+    pub sams_key: String,
+    pub salted_hash: String,
 }
 
 #[derive(Serialize)]
@@ -81,8 +88,8 @@ pub struct SnpMeasurementResponse {
     pub id_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "author-key")]
     pub author_key: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cage: Option<Cage>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "cage-token")]
+    pub cage_token: Option<String>,
 }
 
 fn parse_id_bytes(hex_str: &str) -> Result<[u8; 16]> {
@@ -92,40 +99,54 @@ fn parse_id_bytes(hex_str: &str) -> Result<[u8; 16]> {
         .map_err(|_| anyhow!("id field must be exactly 16 bytes"))
 }
 
-fn sign_cage(
+fn compute_salted_hash(claims_without_hash: &serde_json::Value, salt: &str) -> String {
+    let canonical = serde_json::to_vec(claims_without_hash).expect("claims must serialize");
+    let mut input = canonical;
+    input.extend_from_slice(salt.as_bytes());
+    hex::encode(openssl::sha::sha384(&input))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sign_cage_token(
     id_key: &EcKey<Private>,
     mage: u32,
-    id_block_bytes: &[u8],
+    id_block: &IdBlock,
+    id_auth: &IdAuth,
     salt: &str,
-) -> Result<Cage> {
-    use openssl::hash::MessageDigest;
-    use openssl::pkey::PKey;
-    use openssl::sign::Signer;
-
-    let id_block_hash = hex::encode(openssl::sha::sha384(id_block_bytes));
-
-    let canonical = serde_json::to_vec(&serde_json::json!({
-        "id_block_hash": id_block_hash,
+    certificate: Option<&str>,
+    guest_owner_key: Option<&str>,
+    sams_key: &str,
+) -> Result<String> {
+    let partial = serde_json::json!({
+        "id_block": serde_json::to_value(id_block)?,
+        "id_auth": serde_json::to_value(id_auth)?,
         "mage": mage,
-        "salt": salt,
-    }))?;
+        "certificate": certificate,
+        "guest_owner_key": guest_owner_key,
+        "sams_key": sams_key,
+    });
+    let salted_hash = compute_salted_hash(&partial, salt);
 
-    let pkey = PKey::from_ec_key(id_key.clone())
-        .map_err(|e| anyhow!("failed to create PKey from SAMS id_key: {e}"))?;
-    let mut signer = Signer::new(MessageDigest::sha384(), &pkey)
-        .map_err(|e| anyhow!("failed to create ECDSA signer: {e}"))?;
-    signer
-        .update(&canonical)
-        .map_err(|e| anyhow!("failed to update signer: {e}"))?;
-    let sig_bytes = signer
-        .sign_to_vec()
-        .map_err(|e| anyhow!("failed to sign CAGE: {e}"))?;
-
-    Ok(Cage {
+    let claims = CageTokenClaims {
+        id_block: serde_json::to_value(id_block)?,
+        id_auth: serde_json::to_value(id_auth)?,
         mage,
-        id_block_hash,
-        signature: STANDARD.encode(sig_bytes),
-    })
+        certificate: certificate.map(String::from),
+        guest_owner_key: guest_owner_key.map(String::from),
+        sams_key: sams_key.to_string(),
+        salted_hash,
+    };
+
+    let pkey = openssl::pkey::PKey::from_ec_key(id_key.clone())
+        .map_err(|e| anyhow!("failed to create PKey from SAMS id_key: {e}"))?;
+    let pem = pkey
+        .private_key_to_pem_pkcs8()
+        .map_err(|e| anyhow!("failed to serialize SAMS id_key to PEM: {e}"))?;
+    let encoding_key = EncodingKey::from_ec_pem(&pem)
+        .map_err(|e| anyhow!("failed to create JWT encoding key: {e}"))?;
+
+    encode(&Header::new(Algorithm::ES384), &claims, &encoding_key)
+        .map_err(|e| anyhow!("failed to sign CAGE token: {e}"))
 }
 
 pub struct MeasurementGetHandler {
@@ -307,7 +328,7 @@ impl RequestHandler for MeasurementPostHandler {
         let mut id_key_b64 = None;
         let mut author_key_b64 = None;
 
-        let mut cage_out = None;
+        let mut cage_token_out = None;
 
         if let (Some(fam), Some(img)) = (&req.family_id, &req.image_id) {
             let family_id = FamilyId::new(parse_id_bytes(fam)?);
@@ -399,7 +420,16 @@ impl RequestHandler for MeasurementPostHandler {
                         .expect("salt must exist after ensure_salt_for_mage");
                     (mage, salt)
                 };
-                cage_out = Some(sign_cage(&self.id_key, mage, block_bytes.as_ref(), &salt)?);
+                cage_token_out = Some(sign_cage_token(
+                    &self.id_key,
+                    mage,
+                    &block,
+                    &id_auth,
+                    &salt,
+                    guest_owner_cert.as_deref(),
+                    author_key_b64.as_deref(),
+                    id_key_b64.as_ref().unwrap(),
+                )?);
             }
         }
 
@@ -409,7 +439,7 @@ impl RequestHandler for MeasurementPostHandler {
             id_auth: id_auth_b64,
             id_key: id_key_b64,
             author_key: author_key_b64,
-            cage: cage_out,
+            cage_token: cage_token_out,
         };
         Ok(serde_json::to_vec(&resp)?)
     }
@@ -623,7 +653,7 @@ mod tests {
             id_auth: None,
             id_key: None,
             author_key: None,
-            cage: None,
+            cage_token: None,
         };
         let json: serde_json::Value = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["measurement"], "deadbeef");
@@ -631,7 +661,7 @@ mod tests {
         assert!(json.get("id-auth").is_none());
         assert!(json.get("id-key").is_none());
         assert!(json.get("author-key").is_none());
-        assert!(json.get("cage").is_none());
+        assert!(json.get("cage-token").is_none());
     }
 
     #[test]
@@ -642,11 +672,7 @@ mod tests {
             id_auth: Some("auth".to_string()),
             id_key: Some("key".to_string()),
             author_key: Some("author".to_string()),
-            cage: Some(Cage {
-                mage: 3,
-                id_block_hash: "abc123".to_string(),
-                signature: "c2ln".to_string(),
-            }),
+            cage_token: Some("eyJhbGciOiJFUzM4NCJ9.test.sig".to_string()),
         };
         let json: serde_json::Value = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["measurement"], "deadbeef");
@@ -654,44 +680,148 @@ mod tests {
         assert_eq!(json["id-auth"], "auth");
         assert_eq!(json["id-key"], "key");
         assert_eq!(json["author-key"], "author");
-        assert_eq!(json["cage"]["mage"], 3);
-        assert_eq!(json["cage"]["id_block_hash"], "abc123");
-        assert!(json["cage"].get("salt").is_none());
-        assert_eq!(json["cage"]["signature"], "c2ln");
+        assert_eq!(
+            json["cage-token"], "eyJhbGciOiJFUzM4NCJ9.test.sig",
+            "cage-token should be a JWT string"
+        );
     }
 
-    // --- sign_cage ---
+    // --- sign_cage_token ---
 
-    #[test]
-    fn test_sign_cage() {
-        let key = test_ec_key();
-        let id_block_bytes = b"fake-id-block-data";
-        let cage = sign_cage(&key, 42, id_block_bytes, "aabbccdd").unwrap();
-        assert_eq!(cage.mage, 42);
-        assert!(!cage.id_block_hash.is_empty());
-        assert_eq!(cage.id_block_hash.len(), 96);
-        assert!(!cage.signature.is_empty());
-        assert!(base64::engine::general_purpose::STANDARD
-            .decode(&cage.signature)
-            .is_ok());
+    fn test_id_block() -> IdBlock {
+        IdBlock::new(None, None, None, Some(0), None).unwrap()
     }
 
-    #[test]
-    fn test_sign_cage_bound_to_id_block() {
-        let key = test_ec_key();
-        let cage1 = sign_cage(&key, 7, b"block-a", "salt").unwrap();
-        let cage2 = sign_cage(&key, 7, b"block-b", "salt").unwrap();
-        assert_ne!(cage1.id_block_hash, cage2.id_block_hash);
-        assert_ne!(cage1.signature, cage2.signature);
+    fn test_id_auth(key: &EcKey<Private>, block: &IdBlock) -> IdAuth {
+        IdAuth::default()
+            .sign_id_block(DEFAULT_KEY_ALGO, key.clone(), block)
+            .unwrap()
+    }
+
+    fn test_sams_key_b64(key: &EcKey<Private>) -> String {
+        let pub_key = SevEcdsaPubKey::try_from(key).unwrap();
+        let key_bytes = pub_key.to_bytes().unwrap();
+        STANDARD.encode(key_bytes.as_ref())
     }
 
     #[test]
-    fn test_sign_cage_bound_to_salt() {
+    fn test_sign_cage_token() {
         let key = test_ec_key();
-        let cage1 = sign_cage(&key, 7, b"block", "salt-a").unwrap();
-        let cage2 = sign_cage(&key, 7, b"block", "salt-b").unwrap();
-        assert_eq!(cage1.id_block_hash, cage2.id_block_hash);
-        assert_ne!(cage1.signature, cage2.signature);
+        let block = test_id_block();
+        let id_auth = test_id_auth(&key, &block);
+        let sams_key = test_sams_key_b64(&key);
+
+        let token = sign_cage_token(
+            &key, 42, &block, &id_auth, "aabbccdd", None, None, &sams_key,
+        )
+        .unwrap();
+        let parts: Vec<&str> = token.split('.').collect();
+        assert_eq!(parts.len(), 3, "JWT must have 3 dot-separated parts");
+
+        let claims_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(parts[1])
+            .unwrap();
+        let claims: serde_json::Value = serde_json::from_slice(&claims_bytes).unwrap();
+        assert_eq!(claims["mage"], 42);
+        assert!(claims.get("id_block").is_some());
+        assert!(claims.get("id_auth").is_some());
+        assert!(claims.get("sams_key").is_some());
+        assert!(claims.get("salted_hash").is_some());
+        assert_eq!(claims["salted_hash"].as_str().unwrap().len(), 96);
+    }
+
+    #[test]
+    fn test_sign_cage_token_verifiable() {
+        use jsonwebtoken::{decode, DecodingKey, Validation};
+
+        let key = test_ec_key();
+        let block = test_id_block();
+        let id_auth = test_id_auth(&key, &block);
+        let sams_key = test_sams_key_b64(&key);
+
+        let token =
+            sign_cage_token(&key, 1, &block, &id_auth, "salt", None, None, &sams_key).unwrap();
+
+        let pkey = openssl::pkey::PKey::from_ec_key(key).unwrap();
+        let pub_pem = pkey.public_key_to_pem().unwrap();
+        let decoding_key = DecodingKey::from_ec_pem(&pub_pem).unwrap();
+        let mut validation = Validation::new(Algorithm::ES384);
+        validation.required_spec_claims.clear();
+
+        let decoded = decode::<serde_json::Value>(&token, &decoding_key, &validation).unwrap();
+        assert_eq!(decoded.claims["mage"], 1);
+    }
+
+    #[test]
+    fn test_sign_cage_token_bound_to_id_block() {
+        let key = test_ec_key();
+        let block_a = test_id_block();
+        let mut block_b = test_id_block();
+        block_b.guest_svn = 99;
+        let auth_a = test_id_auth(&key, &block_a);
+        let auth_b = test_id_auth(&key, &block_b);
+        let sams_key = test_sams_key_b64(&key);
+
+        let token_a =
+            sign_cage_token(&key, 7, &block_a, &auth_a, "salt", None, None, &sams_key).unwrap();
+        let token_b =
+            sign_cage_token(&key, 7, &block_b, &auth_b, "salt", None, None, &sams_key).unwrap();
+        assert_ne!(token_a, token_b);
+    }
+
+    #[test]
+    fn test_sign_cage_token_bound_to_salt() {
+        let key = test_ec_key();
+        let block = test_id_block();
+        let id_auth = test_id_auth(&key, &block);
+        let sams_key = test_sams_key_b64(&key);
+
+        let token_a =
+            sign_cage_token(&key, 7, &block, &id_auth, "salt-a", None, None, &sams_key).unwrap();
+        let token_b =
+            sign_cage_token(&key, 7, &block, &id_auth, "salt-b", None, None, &sams_key).unwrap();
+
+        let decode_claims = |t: &str| -> serde_json::Value {
+            let parts: Vec<&str> = t.split('.').collect();
+            let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(parts[1])
+                .unwrap();
+            serde_json::from_slice(&bytes).unwrap()
+        };
+        let claims_a = decode_claims(&token_a);
+        let claims_b = decode_claims(&token_b);
+        assert_ne!(
+            claims_a["salted_hash"], claims_b["salted_hash"],
+            "different salts must produce different salted_hash"
+        );
+    }
+
+    #[test]
+    fn test_sign_cage_token_includes_certificate() {
+        let key = test_ec_key();
+        let block = test_id_block();
+        let id_auth = test_id_auth(&key, &block);
+        let sams_key = test_sams_key_b64(&key);
+
+        let token = sign_cage_token(
+            &key,
+            0,
+            &block,
+            &id_auth,
+            "salt",
+            Some("PEM-CERT-DATA"),
+            Some("guest-owner-key-b64"),
+            &sams_key,
+        )
+        .unwrap();
+
+        let parts: Vec<&str> = token.split('.').collect();
+        let claims_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(parts[1])
+            .unwrap();
+        let claims: serde_json::Value = serde_json::from_slice(&claims_bytes).unwrap();
+        assert_eq!(claims["certificate"], "PEM-CERT-DATA");
+        assert_eq!(claims["guest_owner_key"], "guest-owner-key-b64");
     }
 
     // --- MeasurementHandler ---

@@ -84,9 +84,7 @@ pub fn get_measurement_handler(
                 }
             }
         }
-        (other, _) => {
-            Err(anyhow!("unsupported TEE type for measurement: {other:?}"))
-        }
+        (other, _) => Err(anyhow!("unsupported TEE type for measurement: {other:?}")),
     }
 }
 

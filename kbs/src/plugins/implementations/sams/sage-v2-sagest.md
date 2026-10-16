@@ -13,7 +13,7 @@ SAGEST copies the process from its predecessor, but implements it using Signed J
 - JSON Web Tokens are a portable, well defined, and widely adopted standard for sharing self-contained "stateless" data
 - JSON Web Tokens decode into standard JSON Objects, making them highly flexible for transporting variable size structed data
 - JSON Web Tokens have well defined signing sementics already included in their spec, meaning the SAMS implemeters don't need to fuss over which crypto standards to use
-- JSON Web Tokens allow for the encoding of even more structured identity data inside each distributed CAGE. They can enable the gracefully storage of whole IDBlock / IdAuth structures (which are not present in the attestion report itself) inside of the CAGE
+- JSON Web Tokens allow for the encoding of even more structured identity data inside each distributed CAGE. They can enable the graceful storage of whole IDBlock / IdAuth structures (which are not present in the attestion report itself) inside of the CAGE
 
 ## Usage details in SAMS
 - SAMS Measurement Endpoints will switch from distrubuting Current Authorized Generation Epoch (CAGE) blobs alongside issued IdBlocks & IdAuth structures to distributing **CAGE Tokens** (JWTs) alongside the aformentioned structures.

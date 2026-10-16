@@ -64,12 +64,15 @@ pub fn get_request_handler(
                 mage_lock,
                 rvps_client,
             ))),
-            _ => Err(anyhow!("unsupported authorization endpoint: {}", path.join("/"))),
+            _ => Err(anyhow!(
+                "unsupported authorization endpoint: {}",
+                path.join("/")
+            )),
         },
         "signing" => match (method, path) {
-            (&Method::GET, [.., "identity-provider"]) => Ok(Box::new(IdentityProviderGetHandler::new(
-                identity_provider_url
-            ))),
+            (&Method::GET, [.., "identity-provider"]) => Ok(Box::new(
+                IdentityProviderGetHandler::new(identity_provider_url),
+            )),
             (&Method::POST, [.., "policy"]) => Ok(Box::new(SigningPolicyPostHandler::new(
                 signing_policy_engine,
                 rvps_client,
@@ -80,14 +83,12 @@ pub fn get_request_handler(
                 rvps_client,
                 rvps_certs_lock,
             ))),
-            (&Method::DELETE, [.., "key", digest]) => {
-                Ok(Box::new(SigningKeyDeleteHandler::new(
-                    signing_policy_engine,
-                    rvps_client,
-                    rvps_certs_lock,
-                    digest,
-                )))
-            }
+            (&Method::DELETE, [.., "key", digest]) => Ok(Box::new(SigningKeyDeleteHandler::new(
+                signing_policy_engine,
+                rvps_client,
+                rvps_certs_lock,
+                digest,
+            ))),
             _ => Err(anyhow!("unsupported signing endpoint: {}", path.join("/"))),
         },
         _ => Err(anyhow!("unsupported request type: {req_type}")),

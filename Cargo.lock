@@ -4311,6 +4311,7 @@ name = "kbs"
 version = "0.1.0"
 dependencies = [
  "actix",
+ "actix-tls",
  "actix-web",
  "actix-web-httpauth",
  "aes 0.8.4",
@@ -4360,6 +4361,7 @@ dependencies = [
  "serde_json",
  "serde_with",
  "serial_test",
+ "sev 8.0.0",
  "sha2 0.11.0",
  "sha3-kmac",
  "shadow-rs",
@@ -6010,6 +6012,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rdrand"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d92195228612ac8eed47adbc2ed0f04e513a4ccb98175b6f2bd04d963b533655"
+dependencies = [
+ "rand_core 0.6.4",
+]
+
+[[package]]
 name = "redis"
 version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7015,7 +7026,30 @@ dependencies = [
 [[package]]
 name = "sev"
 version = "7.1.0"
-source = "git+https://github.com/virtee/sev?rev=d487809188c3c92e397bc92e2cb2a85eb982c980#d487809188c3c92e397bc92e2cb2a85eb982c980"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2ff74d7e7d1cc172f3a45adec74fbeee928d71df095b85aaaf66eb84e1e31e6"
+dependencies = [
+ "base64 0.22.1",
+ "bitfield 0.19.4",
+ "bitflags 2.13.1",
+ "byteorder",
+ "dirs 6.0.0",
+ "hex",
+ "iocuddle 0.1.1",
+ "lazy_static",
+ "libc",
+ "openssl",
+ "rdrand",
+ "serde",
+ "serde-big-array",
+ "static_assertions",
+ "uuid",
+]
+
+[[package]]
+name = "sev"
+version = "8.0.0"
+source = "git+https://github.com/amd-cmaxwell/sev?rev=914b47835c9bed9deb54cd68fe8f130bb681e056#914b47835c9bed9deb54cd68fe8f130bb681e056"
 dependencies = [
  "base64 0.22.1",
  "bitfield 0.19.4",

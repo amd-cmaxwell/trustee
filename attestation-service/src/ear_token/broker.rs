@@ -514,7 +514,7 @@ async fn verify_snp_key_endorsement(claims: &mut Value, rvps_client: &RvpsClient
         .get("id_block_en")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    
+
     if id_block_enabled {
         // Verify SAMS IDKey endorsement
         if let Some(id_key_digest) = claims_map.get("id_key_digest").and_then(|v| v.as_str()) {
@@ -553,7 +553,8 @@ async fn verify_snp_key_endorsement(claims: &mut Value, rvps_client: &RvpsClient
 
                 let endorsed = match rvps.query_reference_value("guest-owner-pubkeys").await? {
                     Some(rvps_value) => {
-                        let pubkeys_map: HashMap<String, String> = serde_json::from_value(rvps_value)?;
+                        let pubkeys_map: HashMap<String, String> =
+                            serde_json::from_value(rvps_value)?;
                         pubkeys_map.contains_key(&author_key_digest)
                     }
                     None => false,
@@ -561,7 +562,8 @@ async fn verify_snp_key_endorsement(claims: &mut Value, rvps_client: &RvpsClient
                 claims_map.insert("author_key_endorsed".to_string(), Value::Bool(endorsed));
 
                 if let Some(rvps_value) = rvps.query_reference_value("guest-owner-certs").await? {
-                    let certs_map: HashMap<String, Vec<String>> = serde_json::from_value(rvps_value)?;
+                    let certs_map: HashMap<String, Vec<String>> =
+                        serde_json::from_value(rvps_value)?;
                     if let Some(pem_certs) = certs_map.get(&author_key_digest) {
                         let parsed: Vec<Value> = pem_certs
                             .iter()
@@ -572,7 +574,6 @@ async fn verify_snp_key_endorsement(claims: &mut Value, rvps_client: &RvpsClient
                 }
             }
         }
-
     }
 
     Ok(())

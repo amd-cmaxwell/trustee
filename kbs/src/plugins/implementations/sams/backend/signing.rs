@@ -98,7 +98,6 @@ impl SigningPolicyPostHandler {
 
         Ok(b"{}".to_vec())
     }
-
 }
 
 /// Handler for revoking signing policies via DELETE requests.
@@ -237,10 +236,7 @@ impl SigningKeyDeleteHandler {
         }
     }
 
-    pub async fn revoke_signing_key(
-        &self,
-        headers: &HeaderMap,
-    ) -> Result<Vec<u8>> {
+    pub async fn revoke_signing_key(&self, headers: &HeaderMap) -> Result<Vec<u8>> {
         let auth_key_digest_b64 = &self.auth_key_digest_b64;
         let client_cert = extract_client_cert(headers)?;
 
@@ -294,9 +290,10 @@ pub struct IdentityProviderGetHandler {
 #[async_trait::async_trait]
 impl RequestHandler for IdentityProviderGetHandler {
     async fn handle(&mut self, _body: &[u8], _headers: &HeaderMap) -> Result<Vec<u8>> {
-        let url = self.identity_provider_url.take().ok_or_else(|| {
-            PluginHttpError::not_found("identity provider URL is not configured")
-        })?;
+        let url = self
+            .identity_provider_url
+            .take()
+            .ok_or_else(|| PluginHttpError::not_found("identity provider URL is not configured"))?;
         let resp = serde_json::json!({ "certificate_authority_url": url });
         Ok(serde_json::to_vec(&resp)?)
     }
@@ -304,7 +301,9 @@ impl RequestHandler for IdentityProviderGetHandler {
 
 impl IdentityProviderGetHandler {
     pub fn new(identity_provider_url: Option<String>) -> Self {
-        Self { identity_provider_url }
+        Self {
+            identity_provider_url,
+        }
     }
 }
 

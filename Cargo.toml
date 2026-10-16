@@ -79,4 +79,4 @@ uuid = { version = "1.23.3", features = ["v4", "v5"] }
 zeroize = "1"
 
 [patch.crates-io]
-sev = { git = "https://github.com/virtee/sev", rev = "d487809188c3c92e397bc92e2cb2a85eb982c980" }
+sev = { git = "https://github.com/amd-cmaxwell/sev", rev = "914b47835c9bed9deb54cd68fe8f130bb681e056" }

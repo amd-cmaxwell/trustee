@@ -223,7 +223,8 @@ impl ClientPlugin for Sams {
         method: &Method,
     ) -> Result<AuthMode> {
         match (method.as_str(), path) {
-            ("POST" | "GET", ["measurement", ..]) | ("POST" | "GET" | "DELETE", ["signing", ..]) => Ok(AuthMode::Plugin),
+            ("POST" | "GET", ["measurement", ..])
+            | ("POST" | "GET" | "DELETE", ["signing", ..]) => Ok(AuthMode::Plugin),
             _ => Ok(AuthMode::Admin),
         }
     }
