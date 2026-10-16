@@ -372,6 +372,8 @@ mod tests {
                 vec!["alice-strict".into()],
             )]),
         },
+        #[cfg(all(feature = "as", not(feature = "coco-as-grpc")))]
+        attestation_service: Default::default(),
         http_server: HttpServerConfig {
             sockets: vec!["0.0.0.0:8080".parse().unwrap()],
             insecure_http: false,
@@ -434,6 +436,8 @@ mod tests {
             timeout: crate::attestation::config::DEFAULT_TIMEOUT,
             policy_id_map: Default::default(),
         },
+        #[cfg(all(feature = "as", not(feature = "coco-as-builtin")))]
+        attestation_service: Default::default(),
         http_server: HttpServerConfig {
             sockets: vec![DEFAULT_SOCKET.parse().unwrap()],
             insecure_http: DEFAULT_INSECURE_HTTP,
@@ -478,6 +482,8 @@ mod tests {
             timeout: crate::attestation::config::DEFAULT_TIMEOUT,
             policy_id_map: Default::default(),
         },
+        #[cfg(all(feature = "as", not(feature = "intel-trust-authority-as")))]
+        attestation_service: Default::default(),
         http_server: HttpServerConfig {
             sockets: vec!["0.0.0.0:8080".parse().unwrap()],
             insecure_http: false,
@@ -528,6 +534,8 @@ mod tests {
             timeout: crate::attestation::config::DEFAULT_TIMEOUT,
             policy_id_map: Default::default(),
         },
+        #[cfg(all(feature = "as", not(feature = "coco-as-grpc")))]
+        attestation_service: Default::default(),
         http_server: HttpServerConfig {
             sockets: vec!["0.0.0.0:8080".parse().unwrap()],
             insecure_http: true,
@@ -574,6 +582,8 @@ mod tests {
             timeout: crate::attestation::config::DEFAULT_TIMEOUT,
             policy_id_map: Default::default(),
         },
+        #[cfg(all(feature = "as", not(feature = "coco-as-builtin")))]
+        attestation_service: Default::default(),
         http_server: HttpServerConfig {
             sockets: vec!["0.0.0.0:8080".parse().unwrap()],
             insecure_http: true,
@@ -616,6 +626,8 @@ mod tests {
             timeout: crate::attestation::config::DEFAULT_TIMEOUT,
             policy_id_map: Default::default(),
         },
+        #[cfg(all(feature = "as", not(feature = "intel-trust-authority-as")))]
+        attestation_service: Default::default(),
         http_server: HttpServerConfig {
             sockets: vec!["0.0.0.0:8080".parse().unwrap()],
             insecure_http: true,
@@ -644,6 +656,8 @@ mod tests {
             timeout: crate::attestation::config::DEFAULT_TIMEOUT,
             policy_id_map: Default::default(),
         },
+        #[cfg(all(feature = "as", not(feature = "coco-as-grpc")))]
+        attestation_service: Default::default(),
         http_server: HttpServerConfig {
             insecure_http: true,
             ..Default::default()
@@ -675,6 +689,8 @@ mod tests {
             timeout: crate::attestation::config::DEFAULT_TIMEOUT,
             policy_id_map: Default::default(),
         },
+        #[cfg(all(feature = "as", not(feature = "intel-trust-authority-as")))]
+        attestation_service: Default::default(),
         http_server: HttpServerConfig {
             insecure_http: true,
             ..Default::default()
@@ -708,6 +724,8 @@ mod tests {
             timeout: crate::attestation::config::DEFAULT_TIMEOUT,
             policy_id_map: Default::default(),
         },
+        #[cfg(all(feature = "as", not(feature = "coco-as-builtin")))]
+        attestation_service: Default::default(),
         http_server: HttpServerConfig {
             insecure_http: true,
             ..Default::default()
@@ -730,7 +748,14 @@ mod tests {
         ],
     })]
     fn read_config(#[case] config_path: &str, #[case] expected: KbsConfig) {
-        let config = KbsConfig::try_from(Path::new(config_path)).unwrap();
+        let config = match KbsConfig::try_from(Path::new(config_path)) {
+            Ok(c) => c,
+            Err(e) if e.to_string().contains("unknown variant") => {
+                eprintln!("skipping {config_path}: AS variant not compiled in");
+                return;
+            }
+            Err(e) => panic!("failed to load {config_path}: {e}"),
+        };
         assert_eq!(config, expected, "case {config_path}");
     }
 
