@@ -6,6 +6,7 @@ VAULT ?= true
 GCP ?= false
 AWS ?= false
 EXTERNAL_PLUGIN ?= true
+SAMS ?= false
 
 BUILD_ARCH := $(shell uname -m)
 ARCH ?= $(shell uname -m)
@@ -74,6 +75,10 @@ endif
 
 ifeq ($(EXTERNAL_PLUGIN), true)
   override FEATURES := $(FEATURES),external-plugin
+endif
+
+ifeq ($(SAMS), true)
+  override FEATURES := $(FEATURES),sams
 endif
 
 ifeq ($(PQC_EXPERIMENTAL), true)

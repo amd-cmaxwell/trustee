@@ -92,7 +92,7 @@ Doing so will trigger SAMS to evaluate the Guest Owner's signing-policy and use 
     SAMS will calculate the Launch Measurement for the provided launch params & include them in the response body under the `"measurement"` field.
         
     - **IF the *`GUEST_POLICY`*, *`FAMILY_ID`* & *`IMAGE_ID`* fields were included in the request,** then
-    SAMS will create an IDBlock containing the Launch Measurement, Guest Policy, Family ID, Image ID, & the current Minimum Acceptable Guest SVN (MAGS) pulled from RVPS.
+    SAMS will create an IDBlock containing the Launch Measurement, Guest Policy, Family ID, Image ID, & the guest-owner-specified Guest SVN (defaults to 0). SAMS also signs the current MAGE to produce a CAGE, returned alongside the ID Block.
 
         **This IDBlock will be included, *base64-encoded*, in the response body under the *`"id-block"`* field.**
     

@@ -10,20 +10,15 @@ use serde::Deserialize;
 
 use tokio::sync::Mutex;
 
-use crate::plugins::implementations::sams::rvps_client::RvpsClient;
-use crate::plugins::plugin_manager::PluginHttpError;
-
-use super::snp::measurement::{
+use super::rvps_helpers::{
     build_rvps_message, build_rvps_pubkeys_message, read_rvps_certs_map, read_rvps_pubkeys_map,
 };
+use crate::plugins::implementations::sams::rvps_client::RvpsClient;
+use crate::plugins::plugin_manager::PluginHttpError;
+use crate::plugins::sams::api::RequestHandler;
 
 const CLIENT_CERT_HEADER: &str = "x-client-cert";
 const SIGNING_POLICY_PREFIX: &str = "signing-policy-";
-
-#[derive(Deserialize)]
-pub struct SigningPolicyRequest {
-    pub signing_policy: String,
-}
 
 fn extract_client_cert(headers: &HeaderMap) -> Result<String> {
     let cert_value = headers
@@ -43,13 +38,29 @@ pub fn hash_cert(data: &str) -> String {
     hex::encode(sha384(data.as_bytes()))
 }
 
-pub struct SigningPolicyHandler {
+/// Request structure for registering a signing policy via POST.
+#[derive(Deserialize)]
+pub struct SigningPolicyPostRequest {
+    pub signing_policy: String,
+}
+
+/// Handler for registering signing policies via POST requests.
+/// Extracts the client certificate from the headers, decodes and validates the signing policy,
+/// computes the policy ID, and stores it in the policy engine.
+pub struct SigningPolicyPostHandler {
     signing_policy_engine: PolicyEngine<Regorus>,
     rvps_client: Option<Arc<dyn RvpsClient>>,
     rvps_certs_lock: Arc<Mutex<()>>,
 }
 
-impl SigningPolicyHandler {
+#[async_trait::async_trait]
+impl RequestHandler for SigningPolicyPostHandler {
+    async fn handle(&mut self, body: &[u8], headers: &HeaderMap) -> Result<Vec<u8>> {
+        self.register_signing_policy(headers, body).await
+    }
+}
+
+impl SigningPolicyPostHandler {
     pub fn new(
         signing_policy_engine: PolicyEngine<Regorus>,
         rvps_client: Option<Arc<dyn RvpsClient>>,
@@ -68,7 +79,7 @@ impl SigningPolicyHandler {
         body: &[u8],
     ) -> Result<Vec<u8>> {
         let client_cert = extract_client_cert(headers)?;
-        let req: SigningPolicyRequest = serde_json::from_slice(body)?;
+        let req: SigningPolicyPostRequest = serde_json::from_slice(body)?;
 
         let rego = String::from_utf8(
             STANDARD
@@ -86,6 +97,37 @@ impl SigningPolicyHandler {
             .map_err(|e| anyhow!("failed to store signing policy: {e}"))?;
 
         Ok(b"{}".to_vec())
+    }
+
+}
+
+/// Handler for revoking signing policies via DELETE requests.
+/// Extracts the client certificate from the headers, computes the policy ID,
+/// deletes the policy from the policy engine, and updates the RVPS if applicable.
+pub struct SigningPolicyDeleteHandler {
+    signing_policy_engine: PolicyEngine<Regorus>,
+    rvps_client: Option<Arc<dyn RvpsClient>>,
+    rvps_certs_lock: Arc<Mutex<()>>,
+}
+
+#[async_trait::async_trait]
+impl RequestHandler for SigningPolicyDeleteHandler {
+    async fn handle(&mut self, body: &[u8], headers: &HeaderMap) -> Result<Vec<u8>> {
+        self.revoke_signing_policy(headers).await
+    }
+}
+
+impl SigningPolicyDeleteHandler {
+    pub fn new(
+        signing_policy_engine: PolicyEngine<Regorus>,
+        rvps_client: Option<Arc<dyn RvpsClient>>,
+        rvps_certs_lock: Arc<Mutex<()>>,
+    ) -> Self {
+        Self {
+            signing_policy_engine,
+            rvps_client,
+            rvps_certs_lock,
+        }
     }
 
     pub async fn revoke_signing_policy(&self, headers: &HeaderMap) -> Result<Vec<u8>> {
@@ -163,6 +205,109 @@ impl SigningPolicyHandler {
     }
 }
 
+/// Handler for revoking signing keys via DELETE requests.
+/// Extracts the client certificate from the headers, decodes the AuthKeyDigest,
+/// deletes the key from the RVPS if applicable, and updates the RVPS accordingly.
+pub struct SigningKeyDeleteHandler {
+    signing_policy_engine: PolicyEngine<Regorus>,
+    rvps_client: Option<Arc<dyn RvpsClient>>,
+    rvps_certs_lock: Arc<Mutex<()>>,
+    auth_key_digest_b64: String,
+}
+
+#[async_trait::async_trait]
+impl RequestHandler for SigningKeyDeleteHandler {
+    async fn handle(&mut self, body: &[u8], headers: &HeaderMap) -> Result<Vec<u8>> {
+        self.revoke_signing_key(headers).await
+    }
+}
+
+impl SigningKeyDeleteHandler {
+    pub fn new(
+        signing_policy_engine: PolicyEngine<Regorus>,
+        rvps_client: Option<Arc<dyn RvpsClient>>,
+        rvps_certs_lock: Arc<Mutex<()>>,
+        auth_key_digest_b64: &str,
+    ) -> Self {
+        Self {
+            signing_policy_engine,
+            rvps_client,
+            rvps_certs_lock,
+            auth_key_digest_b64: auth_key_digest_b64.to_string(),
+        }
+    }
+
+    pub async fn revoke_signing_key(
+        &self,
+        headers: &HeaderMap,
+    ) -> Result<Vec<u8>> {
+        let auth_key_digest_b64 = &self.auth_key_digest_b64;
+        let client_cert = extract_client_cert(headers)?;
+
+        let auth_key_digest = String::from_utf8(
+            STANDARD
+                .decode(auth_key_digest_b64)
+                .map_err(|e| anyhow!("invalid base64 in AuthKeyDigest path segment: {e}"))?,
+        )
+        .map_err(|e| anyhow!("AuthKeyDigest is not valid UTF-8: {e}"))?;
+
+        let client = self
+            .rvps_client
+            .as_ref()
+            .ok_or_else(|| anyhow!("RVPS is not configured"))?;
+
+        let _guard = self.rvps_certs_lock.lock().await;
+        let mut certs_map = read_rvps_certs_map(client.as_ref()).await?;
+
+        if let Some(certs) = certs_map.get_mut(&auth_key_digest) {
+            if !certs.contains(&client_cert) {
+                return Err(PluginHttpError::forbidden(
+                    "mTLS certificate does not match any certificate stored for this AuthKeyDigest",
+                ));
+            }
+
+            certs.retain(|c| c != &client_cert);
+            let key_fully_revoked = certs.is_empty();
+            if key_fully_revoked {
+                certs_map.remove(&auth_key_digest);
+            }
+            let message = build_rvps_message(&certs_map)?;
+            client.register(message).await?;
+
+            if key_fully_revoked {
+                let mut pubkeys_map = read_rvps_pubkeys_map(client.as_ref()).await?;
+                pubkeys_map.remove(&auth_key_digest);
+                let message = build_rvps_pubkeys_message(&pubkeys_map)?;
+                client.register(message).await?;
+            }
+        }
+
+        Ok(b"{}".to_vec())
+    }
+}
+
+/// Handler for GET requests to the identity provider endpoint. Returns the configured identity provider URL.
+pub struct IdentityProviderGetHandler {
+    identity_provider_url: Option<String>,
+}
+
+#[async_trait::async_trait]
+impl RequestHandler for IdentityProviderGetHandler {
+    async fn handle(&mut self, _body: &[u8], _headers: &HeaderMap) -> Result<Vec<u8>> {
+        let url = self.identity_provider_url.take().ok_or_else(|| {
+            PluginHttpError::not_found("identity provider URL is not configured")
+        })?;
+        let resp = serde_json::json!({ "certificate_authority_url": url });
+        Ok(serde_json::to_vec(&resp)?)
+    }
+}
+
+impl IdentityProviderGetHandler {
+    pub fn new(identity_provider_url: Option<String>) -> Self {
+        Self { identity_provider_url }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,7 +370,7 @@ mod tests {
     #[test]
     fn test_signing_policy_request_deserialize() {
         let json = r#"{"signing_policy": "cG9saWN5"}"#;
-        let req: SigningPolicyRequest = serde_json::from_str(json).unwrap();
+        let req: SigningPolicyPostRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.signing_policy, "cG9saWN5");
     }
 
@@ -233,7 +378,7 @@ mod tests {
     async fn test_register_signing_policy_success() {
         let storage = Arc::new(MemoryKeyValueStorage::default());
         let engine = PolicyEngine::<Regorus>::new(storage);
-        let handler = SigningPolicyHandler::new(engine, None, Arc::new(Mutex::new(())));
+        let handler = SigningPolicyPostHandler::new(engine, None, Arc::new(Mutex::new(())));
 
         let rego = "package policy\ndefault allow = true";
         let encoded = STANDARD.encode(rego);
@@ -257,7 +402,7 @@ mod tests {
     async fn test_register_signing_policy_missing_header() {
         let storage = Arc::new(MemoryKeyValueStorage::default());
         let engine = PolicyEngine::<Regorus>::new(storage);
-        let handler = SigningPolicyHandler::new(engine, None, Arc::new(Mutex::new(())));
+        let handler = SigningPolicyPostHandler::new(engine, None, Arc::new(Mutex::new(())));
 
         let body = b"{}";
         let headers = HeaderMap::new();
@@ -275,7 +420,7 @@ mod tests {
     async fn test_revoke_signing_key_no_rvps() {
         let storage = Arc::new(MemoryKeyValueStorage::default());
         let engine = PolicyEngine::<Regorus>::new(storage);
-        let handler = SigningPolicyHandler::new(engine, None, Arc::new(Mutex::new(())));
+        let handler = SigningPolicyDeleteHandler::new(engine, None, Arc::new(Mutex::new(())));
 
         let mut headers = HeaderMap::new();
         headers.insert(

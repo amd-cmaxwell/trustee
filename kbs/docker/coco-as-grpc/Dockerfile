@@ -9,6 +9,7 @@ ARG NEBULA_CA_PLUGIN=false
 ARG NEBULA_VERSION=v1.9.5
 ARG VAULT=true
 ARG EXTERNAL_PLUGIN=true
+ARG SAMS=false
 
 WORKDIR /usr/src/kbs
 COPY . .
@@ -24,7 +25,7 @@ RUN if [ $(uname -m) != ${ARCH} ]; then \
     apt-get install -y libssl-dev:${OS_ARCH}; fi
 
 # Build and Install KBS
-RUN cd kbs && make AS_FEATURE=coco-as-grpc ALIYUN=${ALIYUN} ARCH=${ARCH} NEBULA_CA_PLUGIN=${NEBULA_CA_PLUGIN} VAULT=${VAULT} EXTERNAL_PLUGIN=${EXTERNAL_PLUGIN} && \
+RUN cd kbs && make AS_FEATURE=coco-as-grpc ALIYUN=${ALIYUN} ARCH=${ARCH} NEBULA_CA_PLUGIN=${NEBULA_CA_PLUGIN} VAULT=${VAULT} EXTERNAL_PLUGIN=${EXTERNAL_PLUGIN} SAMS=${SAMS} && \
     make ARCH=${ARCH} install-kbs
 
 # Download and install Nebula

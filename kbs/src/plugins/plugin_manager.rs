@@ -16,6 +16,7 @@ use serde_json::Value;
 pub struct PluginHttpError {
     pub status: u16,
     pub message: String,
+    pub headers: Vec<(String, String)>,
 }
 
 impl PluginHttpError {
@@ -23,6 +24,7 @@ impl PluginHttpError {
         Self {
             status: 400,
             message: message.into(),
+            headers: vec![],
         }
         .into()
     }
@@ -31,6 +33,7 @@ impl PluginHttpError {
         Self {
             status: 401,
             message: message.into(),
+            headers: vec![],
         }
         .into()
     }
@@ -39,6 +42,7 @@ impl PluginHttpError {
         Self {
             status: 403,
             message: message.into(),
+            headers: vec![],
         }
         .into()
     }
@@ -47,6 +51,24 @@ impl PluginHttpError {
         Self {
             status: 404,
             message: message.into(),
+            headers: vec![],
+        }
+        .into()
+    }
+
+    pub fn method_not_allowed_with_allow(
+        message: impl Into<String>,
+        allowed_methods: &[actix_web::http::Method],
+    ) -> anyhow::Error {
+        let allow_value = allowed_methods
+            .iter()
+            .map(|m| m.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        Self {
+            status: 405,
+            message: message.into(),
+            headers: vec![("Allow".to_string(), allow_value)],
         }
         .into()
     }

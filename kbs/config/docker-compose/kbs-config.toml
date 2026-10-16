@@ -21,6 +21,10 @@ identity_providers = [
 acls = [{ role = "admin", allowed_endpoints = "^/kbs/.+$" }]
 
 [[plugins]]
+name = "sams"
+id_key_file = "/opt/confidential-containers/kbs/user-keys/sams-id.pem"
+
+[[plugins]]
 name = "resource"
 storage_backend_type = "kvstorage"
 

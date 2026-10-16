@@ -72,6 +72,7 @@ pub enum Error {
     PluginError {
         status: u16,
         message: String,
+        headers: Vec<(String, String)>,
         #[source]
         source: anyhow::Error,
     },
@@ -141,6 +142,17 @@ impl ResponseError for Error {
             ),
             _ => HttpResponse::Unauthorized(),
         };
+
+        if let Error::PluginError { headers, .. } = self {
+            for (name, value) in headers {
+                if let (Ok(n), Ok(v)) = (
+                    actix_web::http::header::HeaderName::from_bytes(name.as_bytes()),
+                    actix_web::http::header::HeaderValue::from_str(value),
+                ) {
+                    res.insert_header((n, v));
+                }
+            }
+        }
 
         error!("{self:?}");
 

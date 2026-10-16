@@ -1,15 +1,14 @@
 pub mod auth;
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use actix_web::http::header::HeaderMap;
+use actix_web::http::Method;
 use anyhow::{anyhow, Context, Result};
 
 use crate::plugins::implementations::sams::rvps_client::RvpsClient;
 use crate::plugins::plugin_manager::PluginHttpError;
 use base64::{engine::general_purpose::STANDARD, Engine};
-use key_value_storage::KeyValueStorage;
 use openssl::ec::EcKey;
 use openssl::pkey::Private;
 use policy_engine::policy::rego::Regorus;
@@ -28,16 +27,17 @@ use sev::parser::ByteParser;
 use tokio::sync::Mutex;
 
 use super::super::super::api::RequestHandler;
-use super::super::authorization::{AUTH_POLICY_ID, MAGS_KEY};
+use super::super::authorization::AUTH_POLICY_ID;
+use super::super::rvps_helpers::{
+    build_rvps_message, build_rvps_pubkeys_message, ensure_salt_for_mage, read_mage,
+    read_rvps_certs_map, read_rvps_pubkeys_map, read_sage_salts,
+};
 use super::super::signing::hash_cert;
 
 use auth::{
     compute_auth_key_digest, evaluate_signing_policy, extract_guest_owner_cert, parse_x509_to_json,
     AUTH_POLICY_RULE,
 };
-
-const RVPS_GUEST_OWNER_CERTS_KEY: &str = "guest-owner-certs";
-const RVPS_GUEST_OWNER_PUBKEYS_KEY: &str = "guest-owner-pubkeys";
 
 #[derive(Deserialize, Serialize)]
 pub struct SnpMeasurementRequest {
@@ -56,9 +56,18 @@ pub struct SnpMeasurementRequest {
     #[serde(default)]
     pub guest_policy: Option<GuestPolicy>,
     #[serde(default)]
+    pub guest_svn: Option<u32>,
+    #[serde(default)]
     pub family_id: Option<String>,
     #[serde(default)]
     pub image_id: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct Cage {
+    pub mage: u32,
+    pub id_block_hash: String,
+    pub signature: String,
 }
 
 #[derive(Serialize)]
@@ -72,6 +81,8 @@ pub struct SnpMeasurementResponse {
     pub id_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "author-key")]
     pub author_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cage: Option<Cage>,
 }
 
 fn parse_id_bytes(hex_str: &str) -> Result<[u8; 16]> {
@@ -81,103 +92,124 @@ fn parse_id_bytes(hex_str: &str) -> Result<[u8; 16]> {
         .map_err(|_| anyhow!("id field must be exactly 16 bytes"))
 }
 
-async fn read_mags(storage: &dyn KeyValueStorage) -> Result<u32> {
-    match storage.get(MAGS_KEY).await? {
-        Some(bytes) => {
-            let val: u32 = serde_json::from_slice(&bytes)?;
-            Ok(val)
-        }
-        None => Ok(0),
+fn sign_cage(
+    id_key: &EcKey<Private>,
+    mage: u32,
+    id_block_bytes: &[u8],
+    salt: &str,
+) -> Result<Cage> {
+    use openssl::hash::MessageDigest;
+    use openssl::pkey::PKey;
+    use openssl::sign::Signer;
+
+    let id_block_hash = hex::encode(openssl::sha::sha384(id_block_bytes));
+
+    let canonical = serde_json::to_vec(&serde_json::json!({
+        "id_block_hash": id_block_hash,
+        "mage": mage,
+        "salt": salt,
+    }))?;
+
+    let pkey = PKey::from_ec_key(id_key.clone())
+        .map_err(|e| anyhow!("failed to create PKey from SAMS id_key: {e}"))?;
+    let mut signer = Signer::new(MessageDigest::sha384(), &pkey)
+        .map_err(|e| anyhow!("failed to create ECDSA signer: {e}"))?;
+    signer
+        .update(&canonical)
+        .map_err(|e| anyhow!("failed to update signer: {e}"))?;
+    let sig_bytes = signer
+        .sign_to_vec()
+        .map_err(|e| anyhow!("failed to sign CAGE: {e}"))?;
+
+    Ok(Cage {
+        mage,
+        id_block_hash,
+        signature: STANDARD.encode(sig_bytes),
+    })
+}
+
+pub struct MeasurementGetHandler {
+    is_auth: bool,
+}
+
+impl MeasurementGetHandler {
+    pub fn new(is_auth: bool) -> Self {
+        Self { is_auth }
     }
 }
 
-pub fn build_rvps_message(certs_map: &HashMap<String, Vec<String>>) -> Result<String> {
-    let payload = serde_json::json!({ RVPS_GUEST_OWNER_CERTS_KEY: certs_map });
-    let payload_b64 = STANDARD.encode(serde_json::to_vec(&payload)?);
-    let message = serde_json::json!({
-        "version": "0.1.0",
-        "payload": payload_b64,
-        "type": "sample"
-    });
-    Ok(serde_json::to_string(&message)?)
-}
-
-pub async fn read_rvps_certs_map(client: &dyn RvpsClient) -> Result<HashMap<String, Vec<String>>> {
-    let result = client.query(RVPS_GUEST_OWNER_CERTS_KEY.to_string()).await?;
-
-    match result {
-        Some(json_str) => {
-            let map: HashMap<String, Vec<String>> = serde_json::from_str(&json_str)?;
-            Ok(map)
+#[async_trait::async_trait]
+impl RequestHandler for MeasurementGetHandler {
+    async fn handle(&mut self, _body: &[u8], _headers: &HeaderMap) -> Result<Vec<u8>> {
+        if self.is_auth {
+            Err(PluginHttpError::method_not_allowed_with_allow(
+                "GET is not supported for this endpoint. \
+                 Use POST /kbs/v0/sams/measurement/snp/auth with a JSON body containing: \
+                 vcpus (u32), vcpu_type (CpuType), guest_features (GuestFeatures), \
+                 ovmf_measurement (OvmfMeasurement), and required fields: \
+                 family_id (hex string, 16 bytes), image_id (hex string, 16 bytes), \
+                 guest_policy (GuestPolicy). Optional fields: vmm_type (VMMType), \
+                 kernel_hash_str, initrd_hash_str, append. \
+                 A guest-owner certificate may be included via an Authorization: Bearer <JWT> \
+                 header, where the JWT payload contains a \"certificate\" claim with the \
+                 PEM-encoded client certificate.",
+                &[Method::POST],
+            ))
+        } else {
+            Err(PluginHttpError::method_not_allowed_with_allow(
+                "GET is not supported for this endpoint. \
+                 Use POST /kbs/v0/sams/measurement/snp with a JSON body containing: \
+                 vcpus (u32), vcpu_type (CpuType), guest_features (GuestFeatures), \
+                 ovmf_measurement (OvmfMeasurement). Optional fields: vmm_type (VMMType), \
+                 kernel_hash_str, initrd_hash_str, append, guest_policy (GuestPolicy), \
+                 family_id (hex string, 16 bytes), image_id (hex string, 16 bytes).",
+                &[Method::POST],
+            ))
         }
-        None => Ok(HashMap::new()),
     }
 }
 
-pub fn build_rvps_pubkeys_message(pubkeys_map: &HashMap<String, String>) -> Result<String> {
-    let payload = serde_json::json!({ RVPS_GUEST_OWNER_PUBKEYS_KEY: pubkeys_map });
-    let payload_b64 = STANDARD.encode(serde_json::to_vec(&payload)?);
-    let message = serde_json::json!({
-        "version": "0.1.0",
-        "payload": payload_b64,
-        "type": "sample"
-    });
-    Ok(serde_json::to_string(&message)?)
-}
-
-pub async fn read_rvps_pubkeys_map(client: &dyn RvpsClient) -> Result<HashMap<String, String>> {
-    let result = client
-        .query(RVPS_GUEST_OWNER_PUBKEYS_KEY.to_string())
-        .await?;
-
-    match result {
-        Some(json_str) => {
-            let map: HashMap<String, String> = serde_json::from_str(&json_str)?;
-            Ok(map)
-        }
-        None => Ok(HashMap::new()),
-    }
-}
-
-pub struct MeasurementHandler {
+pub struct MeasurementPostHandler {
     id_key: EcKey<Private>,
     is_auth: bool,
     rvps_client: Option<Arc<dyn RvpsClient>>,
     rvps_certs_lock: Arc<Mutex<()>>,
+    mage_lock: Arc<Mutex<()>>,
     auth_policy_engine: PolicyEngine<Regorus>,
     signing_policy_engine: PolicyEngine<Regorus>,
-    storage: Arc<dyn KeyValueStorage>,
 }
 
-impl MeasurementHandler {
+impl MeasurementPostHandler {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         id_key: EcKey<Private>,
         is_auth: bool,
         rvps_client: Option<Arc<dyn RvpsClient>>,
         rvps_certs_lock: Arc<Mutex<()>>,
+        mage_lock: Arc<Mutex<()>>,
         auth_policy_engine: PolicyEngine<Regorus>,
         signing_policy_engine: PolicyEngine<Regorus>,
-        storage: Arc<dyn KeyValueStorage>,
     ) -> Self {
         Self {
             id_key,
             is_auth,
             rvps_client,
             rvps_certs_lock,
+            mage_lock,
             auth_policy_engine,
             signing_policy_engine,
-            storage,
         }
     }
 }
 
 #[async_trait::async_trait]
-impl RequestHandler for MeasurementHandler {
+impl RequestHandler for MeasurementPostHandler {
     async fn handle(&mut self, body: &[u8], headers: &HeaderMap) -> Result<Vec<u8>> {
         let req: SnpMeasurementRequest = serde_json::from_slice(body)?;
+        let guest_owner_cert = extract_guest_owner_cert(headers);
+        let is_auth = self.is_auth;
 
-        if self.is_auth
+        if is_auth
             && (req.family_id.is_none() || req.image_id.is_none() || req.guest_policy.is_none())
         {
             return Err(PluginHttpError::bad_request(
@@ -185,13 +217,7 @@ impl RequestHandler for MeasurementHandler {
             ));
         }
 
-        let guest_owner_cert = if self.is_auth {
-            extract_guest_owner_cert(headers)
-        } else {
-            None
-        };
-
-        if self.is_auth {
+        if is_auth {
             if let Ok(policy) = self.auth_policy_engine.get_policy(AUTH_POLICY_ID).await {
                 let mut input_value = serde_json::to_value(&req)?;
                 if let Some(cert) = &guest_owner_cert {
@@ -281,11 +307,13 @@ impl RequestHandler for MeasurementHandler {
         let mut id_key_b64 = None;
         let mut author_key_b64 = None;
 
+        let mut cage_out = None;
+
         if let (Some(fam), Some(img)) = (&req.family_id, &req.image_id) {
             let family_id = FamilyId::new(parse_id_bytes(fam)?);
             let image_id = ImageId::new(parse_id_bytes(img)?);
             let policy = req.guest_policy;
-            let guest_svn = read_mags(&*self.storage).await?;
+            let guest_svn = req.guest_svn.unwrap_or(0);
 
             let block = IdBlock::new(
                 Some(digest),
@@ -300,7 +328,7 @@ impl RequestHandler for MeasurementHandler {
                 .map_err(|e| anyhow!("failed to serialize IdBlock: {e}"))?;
             id_block_b64 = Some(STANDARD.encode(block_bytes.as_ref()));
 
-            if self.is_auth {
+            if is_auth {
                 let mut id_auth = IdAuth::default()
                     .sign_id_block(DEFAULT_KEY_ALGO, self.id_key.clone(), &block)
                     .map_err(|e| anyhow!("failed to sign IdBlock: {e}"))?;
@@ -356,6 +384,22 @@ impl RequestHandler for MeasurementHandler {
                     .to_bytes()
                     .map_err(|e| anyhow!("failed to serialize SAMS public key: {e}"))?;
                 id_key_b64 = Some(STANDARD.encode(key_bytes.as_ref()));
+
+                let (mage, salt) = {
+                    let client = self.rvps_client.as_ref().ok_or_else(|| {
+                        anyhow!("RVPS is required for MAGE and CAGE salt on auth endpoints")
+                    })?;
+                    let _guard = self.mage_lock.lock().await;
+                    let mage = read_mage(client.as_ref()).await?;
+                    ensure_salt_for_mage(client.as_ref(), mage).await?;
+                    let salts = read_sage_salts(client.as_ref()).await?;
+                    let salt = salts
+                        .get(&mage.to_string())
+                        .cloned()
+                        .expect("salt must exist after ensure_salt_for_mage");
+                    (mage, salt)
+                };
+                cage_out = Some(sign_cage(&self.id_key, mage, block_bytes.as_ref(), &salt)?);
             }
         }
 
@@ -365,6 +409,7 @@ impl RequestHandler for MeasurementHandler {
             id_auth: id_auth_b64,
             id_key: id_key_b64,
             author_key: author_key_b64,
+            cage: cage_out,
         };
         Ok(serde_json::to_vec(&resp)?)
     }
@@ -372,6 +417,9 @@ impl RequestHandler for MeasurementHandler {
 
 #[cfg(test)]
 mod tests {
+    use super::super::super::rvps_helpers::{
+        RVPS_GUEST_OWNER_CERTS_KEY, RVPS_GUEST_OWNER_PUBKEYS_KEY,
+    };
     use super::*;
     use crate::plugins::implementations::sams::rvps_client::test_support::MockRvpsClient;
     use key_value_storage::memory::MemoryKeyValueStorage;
@@ -380,6 +428,7 @@ mod tests {
     use policy_engine::policy::rego::Regorus;
     use policy_engine::PolicyEngine;
     use rstest::rstest;
+    use std::collections::HashMap;
 
     fn memory_storage() -> Arc<dyn key_value_storage::KeyValueStorage> {
         Arc::new(MemoryKeyValueStorage::default())
@@ -574,6 +623,7 @@ mod tests {
             id_auth: None,
             id_key: None,
             author_key: None,
+            cage: None,
         };
         let json: serde_json::Value = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["measurement"], "deadbeef");
@@ -581,6 +631,7 @@ mod tests {
         assert!(json.get("id-auth").is_none());
         assert!(json.get("id-key").is_none());
         assert!(json.get("author-key").is_none());
+        assert!(json.get("cage").is_none());
     }
 
     #[test]
@@ -591,6 +642,11 @@ mod tests {
             id_auth: Some("auth".to_string()),
             id_key: Some("key".to_string()),
             author_key: Some("author".to_string()),
+            cage: Some(Cage {
+                mage: 3,
+                id_block_hash: "abc123".to_string(),
+                signature: "c2ln".to_string(),
+            }),
         };
         let json: serde_json::Value = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["measurement"], "deadbeef");
@@ -598,15 +654,44 @@ mod tests {
         assert_eq!(json["id-auth"], "auth");
         assert_eq!(json["id-key"], "key");
         assert_eq!(json["author-key"], "author");
+        assert_eq!(json["cage"]["mage"], 3);
+        assert_eq!(json["cage"]["id_block_hash"], "abc123");
+        assert!(json["cage"].get("salt").is_none());
+        assert_eq!(json["cage"]["signature"], "c2ln");
     }
 
-    // --- read_mags ---
+    // --- sign_cage ---
 
-    #[tokio::test]
-    async fn test_read_mags_empty_returns_zero() {
-        let storage = memory_storage();
-        let result = read_mags(&*storage).await.unwrap();
-        assert_eq!(result, 0);
+    #[test]
+    fn test_sign_cage() {
+        let key = test_ec_key();
+        let id_block_bytes = b"fake-id-block-data";
+        let cage = sign_cage(&key, 42, id_block_bytes, "aabbccdd").unwrap();
+        assert_eq!(cage.mage, 42);
+        assert!(!cage.id_block_hash.is_empty());
+        assert_eq!(cage.id_block_hash.len(), 96);
+        assert!(!cage.signature.is_empty());
+        assert!(base64::engine::general_purpose::STANDARD
+            .decode(&cage.signature)
+            .is_ok());
+    }
+
+    #[test]
+    fn test_sign_cage_bound_to_id_block() {
+        let key = test_ec_key();
+        let cage1 = sign_cage(&key, 7, b"block-a", "salt").unwrap();
+        let cage2 = sign_cage(&key, 7, b"block-b", "salt").unwrap();
+        assert_ne!(cage1.id_block_hash, cage2.id_block_hash);
+        assert_ne!(cage1.signature, cage2.signature);
+    }
+
+    #[test]
+    fn test_sign_cage_bound_to_salt() {
+        let key = test_ec_key();
+        let cage1 = sign_cage(&key, 7, b"block", "salt-a").unwrap();
+        let cage2 = sign_cage(&key, 7, b"block", "salt-b").unwrap();
+        assert_eq!(cage1.id_block_hash, cage2.id_block_hash);
+        assert_ne!(cage1.signature, cage2.signature);
     }
 
     // --- MeasurementHandler ---
@@ -616,18 +701,26 @@ mod tests {
         STANDARD.encode([0u8, 0, 0, 0, 0])
     }
 
+    fn dummy_bearer_jwt() -> String {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        let header = URL_SAFE_NO_PAD.encode(b"{}");
+        let payload = URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&serde_json::json!({"certificate": "dummy"})).unwrap());
+        let sig = URL_SAFE_NO_PAD.encode(b"sig");
+        format!("Bearer {header}.{payload}.{sig}")
+    }
+
     #[tokio::test]
     async fn test_measurement_handler_auth_missing_required_fields() {
         let id_key = test_ec_key();
-        let storage = memory_storage();
-        let mut handler = MeasurementHandler::new(
+        let mut handler = MeasurementPostHandler::new(
             id_key,
             true,
             None,
             Arc::new(Mutex::new(())),
+            Arc::new(Mutex::new(())),
             memory_policy_engine(),
             memory_policy_engine(),
-            storage,
         );
 
         let req = serde_json::json!({
@@ -637,12 +730,51 @@ mod tests {
             "ovmf_measurement": dummy_ovmf_measurement_b64()
         });
         let body = serde_json::to_vec(&req).unwrap();
-        let headers = actix_web::http::header::HeaderMap::new();
+        let mut headers = actix_web::http::header::HeaderMap::new();
+        headers.insert(
+            actix_web::http::header::AUTHORIZATION,
+            dummy_bearer_jwt().parse().unwrap(),
+        );
 
         let err = handler.handle(&body, &headers).await.unwrap_err();
         assert!(
             err.to_string().contains("auth endpoint requires"),
             "unexpected error: {err}"
+        );
+    }
+
+    // --- MeasurementGetHandler ---
+
+    #[tokio::test]
+    async fn test_get_handler_non_auth_path() {
+        let headers = actix_web::http::header::HeaderMap::new();
+        let mut handler = MeasurementGetHandler::new(false);
+        let err = handler.handle(&[], &headers).await.unwrap_err();
+        let plugin_err = err.downcast_ref::<PluginHttpError>().unwrap();
+        assert_eq!(plugin_err.status, 405);
+        assert!(plugin_err.message.contains("Use POST"));
+        assert!(plugin_err.message.contains("/measurement/snp"));
+        assert!(!plugin_err.message.contains("/auth"));
+        assert_eq!(
+            plugin_err.headers,
+            vec![("Allow".to_string(), "POST".to_string())]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_handler_auth_path() {
+        let headers = actix_web::http::header::HeaderMap::new();
+        let mut handler = MeasurementGetHandler::new(true);
+        let err = handler.handle(&[], &headers).await.unwrap_err();
+        let plugin_err = err.downcast_ref::<PluginHttpError>().unwrap();
+        assert_eq!(plugin_err.status, 405);
+        assert!(plugin_err.message.contains("Use POST"));
+        assert!(plugin_err.message.contains("/measurement/snp/auth"));
+        assert!(plugin_err.message.contains("family_id"));
+        assert!(plugin_err.message.contains("certificate"));
+        assert_eq!(
+            plugin_err.headers,
+            vec![("Allow".to_string(), "POST".to_string())]
         );
     }
 }

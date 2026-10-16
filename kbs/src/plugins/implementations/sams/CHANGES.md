@@ -18,7 +18,7 @@ STANDARD                              WITH SAMS
                                       SAMS:
                                         pre-verify params (policy)
                                         compute measurement
-                                        sign ID Block (GUEST_SVN=MAGS)
+                                        sign ID Block + produce CAGE
                                       SAMS ──> Kata Runtime
                                         id-block, id-auth, id-key
                                       ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄
@@ -37,7 +37,8 @@ AS verifies report                    AS verifies report
                                         broker checks AuthKeyDigest
                                           against owner pubkeys in RVPS
                                         policy sees endorsed flags
-                                          + guest_svn, family_id, ...
+                                          + guest_svn (guest-owner-
+                                           controlled), family_id, ...
                                       ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄
 Secret release (same)                 Secret release (same)
 ```
@@ -59,7 +60,7 @@ a misconfigured guest never reaches the attestation phase.
 
 ## New Concepts
 
-- **MAGS** -- Monotonic counter in RVPS embedded as GUEST_SVN in ID Blocks. Lets verifier policies reject stale blocks without key rotation.
+- **MAGE/CAGE** -- MAGE is a monotonic counter tracking authorization policy generations. SAMS signs the MAGE to produce a CAGE (Current Authorized Generation Epoch). The CAGE is returned alongside signed ID Blocks and expected to be placed in CVM InitData for verification during attestation.
 - **Signing-policies** -- Guest-owners upload Rego policies (over mTLS) mapping launch params to signing keypairs. SAMS evaluates server-side; private keys never reach the untrusted host.
 - **Authorization policy** -- Admin Rego policy gating ID Block issuance. Rejects non-compliant configs before they can boot.
 
@@ -75,7 +76,8 @@ All under `/kbs/v0/sams/`. Guest-owner endpoints use mTLS.
 | `POST /signing/policy` | mTLS | Register guest-owner signing-policy |
 | `DELETE /signing/policy` | mTLS | Revoke signing-policy + certs from RVPS |
 | `DELETE /signing/key/<digest>` | mTLS | Revoke specific key endorsement |
-| `POST /authorization/policy` | Admin | Set authorization policy (+ bump MAGS) |
+| `POST /authorization/policy` | Admin | Set authorization policy (+ bump MAGE) |
+| `GET /authorization/policy` | Admin | Retrieve current authorization policy and MAGE value |
 
 ## What Does Not Change
 

@@ -18,7 +18,7 @@ API
 
 ### POST /authorization/policy
 #### Description:
-Admin sets the policy that gates ID Block issuance. Can also bump the MAGS counter to invalidate stale ID Blocks.
+Admin sets the policy that gates ID Block issuance. Can also bump the MAGE counter (Minimum Authorized Generation Epoch) to invalidate stale ID Blocks.
 #### Requires Admin?
 - Yes
 #### Request Params:
@@ -26,12 +26,12 @@ Admin sets the policy that gates ID Block issuance. Can also bump the MAGS count
  ```json
  {
     "policy": "< base64-encoded rego policy >",
-    "incr_gsvn": bool   //optional, default false
+    "incr_mage": bool   //optional, default false
 }
  ```
 
 #### Request Response Body:
-- OK,`{"gsvn": <MAGS value after operation: int>}`
+- OK,`{"mage": <MAGE value after operation: int>}`
 
 
 #### Expected usage:
@@ -51,7 +51,22 @@ curl -X POST \
     -d "$payload" \
     http://$kbs_host:$kbs_api_port/kbs/v0/sams/authorization/policy
 
-# Expected response: '{"gsvn": 0}'
+# Expected response: '{"mage": 0}'
+```
+
+---
+
+### GET /authorization/policy
+#### Description:
+Returns the current authorization policy and MAGE counter value.
+#### Requires Admin?
+- Yes
+#### Response:
+```json
+{
+    "policy": "<base64-encoded rego policy, or null if not set>",
+    "mage": 0
+}
 ```
 
 ---
@@ -65,11 +80,11 @@ Computes a launch measurement from CVM parameters. Optionally returns a signed I
 - A JSON Object containing:
 1. All params required to create a Launch Measurement (e.g. vcpus, vcpu_type, vmm_type, guest_features, append)
 2. An `ovmf_measurement` field containing a base64-encoded `OvmfMeasurement` (produced by `get_snp_ovmf_measurement()` from the `sev` crate), plus optional precomputed hashes for kernel and initrd (e.g. kernel_hash_str, initrd_hash_str)
-3. [Optional] IDBlock Metadata: FAMILY_ID, IMAGE_ID, & GUEST_POLICY
+3. [Optional] IDBlock Metadata: FAMILY_ID, IMAGE_ID, GUEST_POLICY, GUEST_SVN
 
 #### Response (progressive):
 - **Launch params only:** `{"measurement": "<launch measurement>"}`
-- **Launch params + IDBlock Metadata:** adds `"id-block"` (base64-encoded IDBlock containing the measurement, FAMILY_ID, IMAGE_ID, GUEST_POLICY, and GUEST_SVN set to the current MAGS from RVPS)
+- **Launch params + IDBlock Metadata:** adds `"id-block"` (base64-encoded IDBlock containing the measurement, FAMILY_ID, IMAGE_ID, GUEST_POLICY, and GUEST_SVN from the request (defaults to 0))
 
 ---
 
@@ -87,6 +102,7 @@ Primary endpoint for Kata Runtime at CVM launch. Like `/measurement/<tee>/` but 
   - `"measurement"`, `"id-block"` (as above)
   - `"id-auth"` (base64-encoded IdAuth with SAMS-only signing: AuthKey fields zeroed)
   - `"id-key"` (SAMS Public Key)
+  - `"cage"` — a JSON object `{"mage": <current MAGE>, "signature": "<base64 ECDSA-SHA384 signature>"}` (the Signed Authorization Generation Epoch)
 - **All of the above + registered guest-owner client cert in Bearer Token:**
   - SAMS evaluates the guest-owner's **signing-policy** (a Rego policy uploaded during registration) with the launch params as input. The policy selects which signing keypair to use by outputting `data.policy.pubkey` and `data.policy.privkey` (PEM strings).
   - `"id-auth"` includes guest-owner signing (IdKeySig, AuthKeyAlgo, AuthKeyDigest populated using the policy-selected keys)
@@ -274,8 +290,8 @@ sequenceDiagram
 When `requirePreVerification` is true, Kata Runtime requests an ID Block from
 the SAMS plugin. SAMS optionally pre-verifies each launch parameter against RVPS
 reference values before computing the expected launch measurement and signing the
-ID Block. SAMS retrieves the current Minimum Acceptable Guest SVN (MAGS) from
-RVPS and embeds it in the ID Block as the GUEST_SVN, versioning the block so
+ID Block. SAMS reads the current Minimum Authorized Generation Epoch (MAGE) and signs it to produce a CAGE
+(Certified Authorization Generation Epoch), which is returned alongside the ID Block so
 that stale ID Blocks can be rejected during attestation.
 
 If `requirePreVerification` is not true, the current (non-SAMS) flow is used and
@@ -329,10 +345,10 @@ sequenceDiagram
         end
 
         critical Version the IDBlock
-            sams ->> rvps: Get Minimum Accepted <br>Guest SVN (MAGS)
-            rvps -->> sams: MAGS Value
+            sams ->> sams: Read MAGE from storage
+            sams ->> sams: Sign MAGE to produce CAGE
         end
-        note over sams: From LaunchParams,<br> IDBlock Meta,<br> & MAGS Value
+        note over sams: From LaunchParams,<br> IDBlock Meta,<br> & Guest SVN from request
         sams ->> sams: Calculate Launch Measurement<br>(sev-snp-measure / create_id_block)
         sams ->> sams: Sign IDBlock with SAMS PrivKey
 
@@ -342,7 +358,7 @@ sequenceDiagram
         else /measurement/snp/auth (no guest-owner cert)
             sams ->> sams: Create IdAuth (SAMS-only signing,<br>AuthKey fields zeroed)
             sams -->> kata_runtime: ID Block + IdAuth response
-            note over sams, kata_runtime: Response contains:<br>- measurement, id-block<br>- id-auth (SAMS-only)<br>- id-key (SAMS PubKey)
+            note over sams, kata_runtime: Response contains:<br>- measurement, id-block<br>- id-auth (SAMS-only)<br>- id-key (SAMS PubKey)<br>- cage (MAGE + ECDSA signature)
         else /measurement/snp/auth (with guest-owner cert)
             sams ->> policy_engine: Evaluate guest-owner signing-policy
             note over sams, policy_engine: input = LaunchParams<br>rules = [data.policy.pubkey,<br>data.policy.privkey]
@@ -357,7 +373,7 @@ sequenceDiagram
             sams ->> rvps: Register guest-owner cert<br>keyed by AuthKeyDigest
             sams ->> rvps: Register guest-owner pubkey<br>keyed by AuthKeyDigest
             sams -->> kata_runtime: ID Block + IdAuth response
-            note over sams, kata_runtime: Response contains:<br>- measurement, id-block<br>- id-auth (full: IDBlockSig + IdKeySig)<br>- id-key (SAMS PubKey)<br>- author-key (Guest Owner PubKey,<br>  selected by signing-policy)
+            note over sams, kata_runtime: Response contains:<br>- measurement, id-block<br>- id-auth (full: IDBlockSig + IdKeySig)<br>- id-key (SAMS PubKey)<br>- author-key (Guest Owner PubKey,<br>  selected by signing-policy)<br>- cage (MAGE + ECDSA signature)
         end
     end
 ```
@@ -482,15 +498,16 @@ in the claims. Each cert object contains `subject`, `issuer`, `serial`, `not_bef
 assertions like `input.guest_owner_certs[i].subject.O == "Acme Corp"`.
 
 The verified claims are then evaluated by the Policy Engine against the EAR appraisal policy.
-Policy provisions can query RVPS for reference values, verify the reported `guest_svn` against
-the Minimum Acceptable Guest SVN (MAGS) from RVPS, check the `sams_id_key_endorsed` and
-`author_key_endorsed` flags, and assert on the structured `guest_owner_certs`. Any mismatch
-adjusts the trust claims at a severity determined by the Verifier Policy Owner. The final
+Policy provisions can query RVPS for reference values, verify the CAGE signature against the
+SAMS public key and compare the MAGE against the current minimum in RVPS, check the
+`sams_id_key_endorsed` and `author_key_endorsed` flags, and assert on the structured
+`guest_owner_certs`. Any mismatch adjusts the trust claims at a severity determined by the
+Verifier Policy Owner. The final
 result is an EAR token encoding the TEE's trustworthiness vector.
 
 The default EAR policy (`ear_default_policy_cpu.rego`) now includes a SAMS-specific
 SNP rule that requires `id_block_en`, `sams_id_key_endorsed`, `author_key_endorsed`,
-and `guest_svn >= snp_minimum_acceptable_guest_svn` for an `executables` score of 3.
+and a valid CAGE with MAGE at or above the RVPS minimum for an `executables` score of 3.
 
 ```mermaid
 sequenceDiagram
@@ -554,11 +571,12 @@ sequenceDiagram
             end
         end
 
-        opt Verify Guest SVN
-            policy_engine ->> rvps: Retrieve Minimum Acceptable Guest SVN (MAGS)
-            rvps -->> policy_engine: MAGS Value
-            policy_engine ->> policy_engine: Compare guest_svn against MAGS
-            break Reported Guest SVN non-compliant
+        opt Verify CAGE / MAGE
+            policy_engine ->> policy_engine: Verify CAGE signature against SAMS public key
+            policy_engine ->> rvps: Retrieve current MAGE minimum
+            rvps -->> policy_engine: MAGE minimum value
+            policy_engine ->> policy_engine: Compare CAGE MAGE against minimum
+            break CAGE invalid or MAGE below minimum
                 policy_engine ->> policy_engine: Adjust trust claims
                 note over policy_engine: Severity determined by<br>Verifier Policy Owner
             end

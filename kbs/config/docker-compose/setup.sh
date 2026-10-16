@@ -36,6 +36,11 @@ if [ ! -s admin-token ]; then
   echo "Generated ${KEY_DIR}/admin-token (10 years validity)."
 fi
 
+if [ ! -s sams-id.pem ]; then
+  openssl ecparam -name secp384r1 -genkey -noout -out sams-id.pem
+  echo "Generated ${KEY_DIR}/sams-id.pem (SAMS ID signing key, P-384)."
+fi
+
 if [ ! -s token.key ]; then
   openssl genrsa -traditional -out ca.key 2048
   openssl req -new -key ca.key -out ca-req.csr -subj "/O=CNCF/OU=CoCo/CN=KBS-compose-root"

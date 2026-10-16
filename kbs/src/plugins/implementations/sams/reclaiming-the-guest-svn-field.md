@@ -27,6 +27,7 @@ The Definition of Done for any solution must meet these 3 criteria:
     2. Retrieve the MAGE & the current Salt from RVPS
     3. Combine the MAGE, IdBlock Hash, & Salt into a structure 
     4. Sign that structure using SAMS' private key. 
+- The combination of MAGE + IDBlock Hash + Signature constitutes the Current Authorized Generation Epoch (CAGE), as endorsed by Trustee.
     >Rationale: 
     > - The CAGE should be **bound to the IdBlock it tags** to avoid a malicious host pairing a CAGE with an IdBlock that it was not intended to be paired with
     >   - **To account for this, we should include a Hash of the IdBlock in the CAGE**
@@ -38,7 +39,6 @@ The Definition of Done for any solution must meet these 3 criteria:
     >       - That way the SNP Verifier can affirm that a CAGE was valid ***at the time it was issued***, even if it was issued in a previous AGE
     >       - In turn, that would allow Verifier Policy Owners to safely make rules spanning multiple AGEs
     >           - E.g, "Accept the report IFF The Attester is using an IdBlock that was generated in AGE=2 OR AGE=3"
-- The combination of MAGE + IDBlock Hash + Signature constitutes the Current Authorized Generation Epoch (CAGE), as endorsed by Trustee.
 - Upon Authorizing a launch configuration, SAMS' Measurement Endpoints will return the CAGE alongside the generated ID Block
 - ID Block users will be expected to include the CAGE in their CVM InitData.
 - During the verification step of the RCAR handshake, crucially AFTER the SNP Verifier has confirmed the hash of the provided initData matches the HOST_DATA field of the attestation report, the SNP Verifier will:

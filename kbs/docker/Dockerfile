@@ -8,6 +8,7 @@ ARG VAULT=true
 ARG GCP=false
 ARG AWS=false
 ARG EXTERNAL_PLUGIN=true
+ARG SAMS=false
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -48,7 +49,7 @@ RUN if [ "${ARCH}" = "x86_64" ]; then curl -fsSL https://download.01.org/intel-s
 WORKDIR /usr/src/trustee
 COPY . .
 
-RUN cd kbs && make AS_FEATURE=coco-as-builtin FEATURES=pkcs11 ALIYUN=${ALIYUN} ARCH=${ARCH} VAULT=${VAULT} GCP=${GCP} AWS=${AWS} EXTERNAL_PLUGIN=${EXTERNAL_PLUGIN} && \
+RUN cd kbs && make AS_FEATURE=coco-as-builtin FEATURES=pkcs11 ALIYUN=${ALIYUN} ARCH=${ARCH} VAULT=${VAULT} GCP=${GCP} AWS=${AWS} EXTERNAL_PLUGIN=${EXTERNAL_PLUGIN} SAMS=${SAMS} && \
     make ARCH=${ARCH} install-kbs
 
 # ubuntu:24.04

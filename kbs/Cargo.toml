@@ -48,8 +48,11 @@ nebula-ca-plugin = []
 # Use HashiCorp Vault KV v1 as KBS backend
 vault = ["vaultrs"]
 
-# Use Signing, Authentication, & Measurement Service (SAMS) plugin
-sams = ["sev", "dep:reference-value-provider-service"]
+# Use Signing, Authentication, & Measurement Service (SAMS) plugin (core)
+sams = ["dep:reference-value-provider-service"]
+
+# SAMS SNP measurement backend (requires sams + sev crate)
+sams-snp = ["sams", "sev"]
 
 # Use AWS Secrets Manager as KBS resource backend
 aws = ["aws-config", "aws-sdk-secretsmanager"]

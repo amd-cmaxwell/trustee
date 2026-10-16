@@ -70,6 +70,7 @@ fn plugin_error(e: anyhow::Error) -> Error {
         Ok(http_err) => Error::PluginError {
             status: http_err.status,
             message: http_err.message.clone(),
+            headers: http_err.headers.clone(),
             source: http_err.into(),
         },
         Err(e) => Error::PluginInternalError { source: e },

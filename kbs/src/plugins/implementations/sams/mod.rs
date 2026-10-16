@@ -9,7 +9,6 @@ use std::sync::Arc;
 use actix_web::http::header::HeaderMap;
 use actix_web::http::Method;
 use anyhow::{anyhow, bail, Result};
-use base64::{engine::general_purpose::STANDARD, Engine};
 use kbs_types::Tee;
 use key_value_storage::{KeyValueStorageType, StorageProvider};
 use openssl::ec::EcKey;
@@ -18,9 +17,6 @@ use policy_engine::policy::rego::Regorus;
 use policy_engine::PolicyEngine;
 use reference_value_provider_service::{Rvps, REFERENCE_VALUE_STORAGE_NAMESPACE};
 use serde::Deserialize;
-use sev::measurement::idblock::load_priv_key;
-use sev::measurement::idblock_types::SevEcdsaPubKey;
-use sev::parser::ByteParser;
 use tokio::sync::Mutex;
 
 use openssl::x509::X509;
@@ -30,7 +26,6 @@ use super::super::plugin_manager::{AuthMode, ClientPlugin, PluginHttpError};
 mod api;
 use api::RequestHandler;
 mod backend;
-use backend::signing::SigningPolicyHandler;
 pub mod rvps_client;
 use rvps_client::{BuiltinRvpsClient, GrpcRvpsClient, RvpsClient};
 
@@ -59,10 +54,9 @@ pub struct Sams {
     id_key: EcKey<Private>,
     rvps_client: Option<Arc<dyn RvpsClient>>,
     rvps_certs_lock: Arc<Mutex<()>>,
-    mags_lock: Arc<Mutex<()>>,
+    mage_lock: Arc<Mutex<()>>,
     auth_policy_engine: PolicyEngine<Regorus>,
     signing_policy_engine: PolicyEngine<Regorus>,
-    storage: Arc<dyn key_value_storage::KeyValueStorage>,
     identity_provider_url: Option<String>,
 }
 
@@ -78,7 +72,7 @@ impl Sams {
             .await?;
         let policy_engine = PolicyEngine::<Regorus>::new(storage.clone());
         let signing_policy_engine = PolicyEngine::<Regorus>::new(signing_policy_storage);
-        let id_key = load_priv_key(config.id_key_file)?;
+        let id_key = load_ec_p384_privkey(&config.id_key_file)?;
 
         let rvps_client: Option<Arc<dyn RvpsClient>> = match config.rvps {
             Some(SamsRvpsConfig::Grpc { address }) => Some(Arc::new(GrpcRvpsClient::new(address))),
@@ -94,21 +88,7 @@ impl Sams {
         };
 
         if let Some(client) = &rvps_client {
-            let pub_key = SevEcdsaPubKey::try_from(&id_key)
-                .map_err(|e| anyhow!("failed to extract SAMS public key: {e}"))?;
-            let key_bytes = pub_key
-                .to_bytes()
-                .map_err(|e| anyhow!("failed to serialize SAMS public key: {e}"))?;
-            let key_b64 = STANDARD.encode(key_bytes.as_ref());
-
-            let payload = serde_json::json!({ "sams-id-key": key_b64 });
-            let payload_b64 = STANDARD.encode(serde_json::to_vec(&payload)?);
-            let message = serde_json::json!({
-                "version": "0.1.0",
-                "payload": payload_b64,
-                "type": "sample"
-            });
-            client.register(serde_json::to_string(&message)?).await?;
+            backend::rvps_helpers::register_sams_pubkey(client.as_ref(), &id_key).await?;
         }
 
         let identity_provider_url = config.identity_provider_url.or_else(|| {
@@ -121,13 +101,27 @@ impl Sams {
             id_key,
             rvps_client,
             rvps_certs_lock: Arc::new(Mutex::new(())),
-            mags_lock: Arc::new(Mutex::new(())),
+            mage_lock: Arc::new(Mutex::new(())),
             auth_policy_engine: policy_engine,
             signing_policy_engine,
-            storage,
             identity_provider_url,
         })
     }
+}
+
+fn load_ec_p384_privkey(path: &std::path::Path) -> Result<EcKey<Private>> {
+    let key_data =
+        std::fs::read(path).map_err(|e| anyhow!("failed to read {}: {e}", path.display()))?;
+    let ec_key = EcKey::private_key_from_pem(&key_data)
+        .or_else(|_| EcKey::private_key_from_der(&key_data))
+        .map_err(|e| anyhow!("failed to parse {}: {e}", path.display()))?;
+    ec_key
+        .check_key()
+        .map_err(|e| anyhow!("invalid EC key in {}: {e}", path.display()))?;
+    if ec_key.group().curve_name() != Some(openssl::nid::Nid::SECP384R1) {
+        bail!("{} must be a P-384 (secp384r1) EC key", path.display());
+    }
+    Ok(ec_key)
 }
 
 fn extract_ca_issuers_url(cert: &X509) -> Option<String> {
@@ -148,21 +142,24 @@ impl Sams {
     async fn dispatch(
         &self,
         endpoint: &str,
-        tee: Tee,
-        is_auth: bool,
+        tee: Option<Tee>,
+        path: &[&str],
+        method: &Method,
         body: &[u8],
         headers: &HeaderMap,
     ) -> Result<Vec<u8>> {
         let mut handler = api::get_request_handler(
             endpoint,
             tee,
+            path,
+            method,
             self.id_key.clone(),
-            is_auth,
             self.rvps_client.clone(),
             self.rvps_certs_lock.clone(),
+            self.mage_lock.clone(),
             self.auth_policy_engine.clone(),
             self.signing_policy_engine.clone(),
-            self.storage.clone(),
+            self.identity_provider_url.clone(),
         )?;
         handler.handle(body, headers).await
     }
@@ -178,32 +175,7 @@ impl ClientPlugin for Sams {
         method: &Method,
         _init_data: Option<&serde_json::Value>,
     ) -> Result<Vec<u8>> {
-        let empty_headers = HeaderMap::new();
-        match (method.as_str(), path) {
-            // --- Handlers that do NOT examine HTTP headers ---
-            ("POST", ["measurement", tee_str]) => {
-                let tee = tee_from_path(tee_str)?;
-                self.dispatch("measurement", tee, false, body, &empty_headers)
-                    .await
-            }
-            ("POST", ["authorization", "policy", ..]) => {
-                let mut handler = api::get_auth_policy_handler(
-                    self.auth_policy_engine.clone(),
-                    self.storage.clone(),
-                    self.mags_lock.clone(),
-                );
-                handler.handle(body, &empty_headers).await
-            }
-            ("GET", ["signing", "identity-provider"]) => match &self.identity_provider_url {
-                Some(url) => Ok(serde_json::to_vec(
-                    &serde_json::json!({ "certificate_authority_url": url }),
-                )?),
-                None => Err(PluginHttpError::not_found(
-                    "identity provider URL is not configured",
-                )),
-            },
-            _ => bail!("unsupported: {} /kbs/v0/sams/{}", method, path.join("/")),
-        }
+        bail!("unsupported: {} /kbs/v0/sams/{}", method, path.join("/"))
     }
 
     async fn handle_with_headers(
@@ -216,36 +188,18 @@ impl ClientPlugin for Sams {
         init_data: Option<&serde_json::Value>,
     ) -> Result<Vec<u8>> {
         match (method.as_str(), path) {
-            // --- Handlers that examine HTTP headers ---
-            // Bearer JWT (guest-owner cert in "certificate" claim)
-            ("POST", ["measurement", tee_str, "auth"]) => {
+            ("POST" | "GET", ["measurement", tee_str, ..]) => {
                 let tee = tee_from_path(tee_str)?;
-                self.dispatch("measurement", tee, true, body, headers).await
+                self.dispatch("measurement", Some(tee), path, method, body, headers)
+                    .await
             }
-            // mTLS (x-client-cert header from reverse proxy)
-            ("POST", ["signing", "policy"]) => {
-                let handler = SigningPolicyHandler::new(
-                    self.signing_policy_engine.clone(),
-                    self.rvps_client.clone(),
-                    self.rvps_certs_lock.clone(),
-                );
-                handler.register_signing_policy(headers, body).await
+            ("POST" | "GET" | "DELETE", ["signing", ..]) => {
+                self.dispatch("signing", None, path, method, body, headers)
+                    .await
             }
-            ("DELETE", ["signing", "policy"]) => {
-                let handler = SigningPolicyHandler::new(
-                    self.signing_policy_engine.clone(),
-                    self.rvps_client.clone(),
-                    self.rvps_certs_lock.clone(),
-                );
-                handler.revoke_signing_policy(headers).await
-            }
-            ("DELETE", ["signing", "key", digest]) => {
-                let handler = SigningPolicyHandler::new(
-                    self.signing_policy_engine.clone(),
-                    self.rvps_client.clone(),
-                    self.rvps_certs_lock.clone(),
-                );
-                handler.revoke_signing_key(headers, digest).await
+            ("POST" | "GET", ["authorization", "policy", ..]) => {
+                self.dispatch("authorization", None, path, method, body, headers)
+                    .await
             }
             _ => self.handle(body, query, path, method, init_data).await,
         }
@@ -266,10 +220,10 @@ impl ClientPlugin for Sams {
         _body: &[u8],
         _query: &HashMap<String, String>,
         path: &[&str],
-        _method: &Method,
+        method: &Method,
     ) -> Result<AuthMode> {
-        match path {
-            ["measurement", ..] | ["signing", ..] => Ok(AuthMode::Plugin),
+        match (method.as_str(), path) {
+            ("POST" | "GET", ["measurement", ..]) | ("POST" | "GET" | "DELETE", ["signing", ..]) => Ok(AuthMode::Plugin),
             _ => Ok(AuthMode::Admin),
         }
     }
@@ -420,6 +374,72 @@ mod tests {
         assert!(err.to_string().contains("unsupported"), "unexpected: {err}");
     }
 
+    #[cfg(feature = "sams-snp")]
+    #[tokio::test]
+    async fn test_get_measurement_snp_returns_method_not_allowed() {
+        let sams = build_test_sams().await;
+        let headers = HeaderMap::new();
+        let err = sams
+            .handle_with_headers(
+                b"",
+                &HashMap::new(),
+                &["measurement", "snp"],
+                &Method::GET,
+                &headers,
+                None,
+            )
+            .await
+            .unwrap_err();
+        let plugin_err = err.downcast_ref::<PluginHttpError>().unwrap();
+        assert_eq!(plugin_err.status, 405);
+        assert!(
+            plugin_err.message.contains("Use POST"),
+            "unexpected: {}",
+            plugin_err.message
+        );
+    }
+
+    #[cfg(feature = "sams-snp")]
+    #[tokio::test]
+    async fn test_get_measurement_snp_auth_returns_method_not_allowed() {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine;
+
+        let sams = build_test_sams().await;
+        let payload = URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&serde_json::json!({"certificate": "dummy"})).unwrap());
+        let jwt = format!(
+            "Bearer {}.{payload}.{}",
+            URL_SAFE_NO_PAD.encode(b"{}"),
+            URL_SAFE_NO_PAD.encode(b"sig"),
+        );
+        let mut headers = HeaderMap::new();
+        headers.insert(actix_web::http::header::AUTHORIZATION, jwt.parse().unwrap());
+        let err = sams
+            .handle_with_headers(
+                b"",
+                &HashMap::new(),
+                &["measurement", "snp", "auth"],
+                &Method::GET,
+                &headers,
+                None,
+            )
+            .await
+            .unwrap_err();
+        let plugin_err = err.downcast_ref::<PluginHttpError>().unwrap();
+        assert_eq!(plugin_err.status, 405);
+        assert!(
+            plugin_err.message.contains("Use POST"),
+            "unexpected: {}",
+            plugin_err.message
+        );
+        assert!(
+            plugin_err.message.contains("family_id"),
+            "should mention required auth fields: {}",
+            plugin_err.message
+        );
+    }
+
     async fn build_test_sams() -> Sams {
         use key_value_storage::memory::MemoryKeyValueStorage;
         use openssl::ec::{EcGroup, EcKey};
@@ -440,10 +460,9 @@ mod tests {
             id_key,
             rvps_client: None,
             rvps_certs_lock: Arc::new(Mutex::new(())),
-            mags_lock: Arc::new(Mutex::new(())),
+            mage_lock: Arc::new(Mutex::new(())),
             auth_policy_engine: policy_engine,
             signing_policy_engine,
-            storage,
             identity_provider_url: None,
         }
     }
@@ -525,11 +544,12 @@ mod tests {
     async fn test_handle_identity_provider_configured() {
         let sams = build_test_sams_with_idp("https://ca.example.com").await;
         let result = sams
-            .handle(
+            .handle_with_headers(
                 b"",
                 &HashMap::new(),
                 &["signing", "identity-provider"],
                 &Method::GET,
+                &HeaderMap::new(),
                 None,
             )
             .await
@@ -542,11 +562,12 @@ mod tests {
     async fn test_handle_identity_provider_not_configured() {
         let sams = build_test_sams().await;
         let err = sams
-            .handle(
+            .handle_with_headers(
                 b"",
                 &HashMap::new(),
                 &["signing", "identity-provider"],
                 &Method::GET,
+                &HeaderMap::new(),
                 None,
             )
             .await

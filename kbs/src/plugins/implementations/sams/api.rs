@@ -1,17 +1,23 @@
 use std::sync::Arc;
 
 use actix_web::http::header::HeaderMap;
+use actix_web::http::Method;
 use anyhow::{anyhow, Result};
 use kbs_types::Tee;
-use key_value_storage::KeyValueStorage;
 use openssl::ec::EcKey;
 use openssl::pkey::Private;
 use policy_engine::policy::rego::Regorus;
 use policy_engine::PolicyEngine;
 use tokio::sync::Mutex;
 
-use super::backend::authorization::AuthorizationPolicyHandler;
-use super::backend::snp::measurement::MeasurementHandler as SnpMeasurementHandler;
+use super::backend::authorization::{
+    AuthorizationPolicyGetHandler, AuthorizationPolicyPostHandler,
+};
+use super::backend::measurement::get_measurement_handler;
+use super::backend::signing::{
+    IdentityProviderGetHandler, SigningKeyDeleteHandler, SigningPolicyDeleteHandler,
+    SigningPolicyPostHandler,
+};
 use super::rvps_client::RvpsClient;
 
 #[async_trait::async_trait]
@@ -19,61 +25,82 @@ pub trait RequestHandler: Send {
     async fn handle(&mut self, body: &[u8], headers: &HeaderMap) -> Result<Vec<u8>>;
 }
 
-pub enum MeasurementHandler {
-    Snp(SnpMeasurementHandler),
-}
-
-#[async_trait::async_trait]
-impl RequestHandler for MeasurementHandler {
-    async fn handle(&mut self, body: &[u8], headers: &HeaderMap) -> Result<Vec<u8>> {
-        match self {
-            Self::Snp(h) => h.handle(body, headers).await,
-        }
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 pub fn get_request_handler(
     req_type: &str,
-    tee: Tee,
+    tee: Option<Tee>,
+    path: &[&str],
+    method: &Method,
     id_key: EcKey<Private>,
-    is_auth: bool,
     rvps_client: Option<Arc<dyn RvpsClient>>,
     rvps_certs_lock: Arc<Mutex<()>>,
+    mage_lock: Arc<Mutex<()>>,
     auth_policy_engine: PolicyEngine<Regorus>,
     signing_policy_engine: PolicyEngine<Regorus>,
-    storage: Arc<dyn KeyValueStorage>,
-) -> Result<MeasurementHandler> {
-    match (req_type, tee) {
-        ("measurement", Tee::Snp) => Ok(MeasurementHandler::Snp(SnpMeasurementHandler::new(
-            id_key,
-            is_auth,
-            rvps_client,
-            rvps_certs_lock,
-            auth_policy_engine,
-            signing_policy_engine,
-            storage,
-        ))),
-        ("measurement", other) => Err(anyhow!("unsupported TEE type for measurement: {other:?}")),
+    identity_provider_url: Option<String>,
+) -> Result<Box<dyn RequestHandler>> {
+    match req_type {
+        "measurement" => {
+            let tee = tee.ok_or_else(|| anyhow!("measurement requests require a TEE type"))?;
+            get_measurement_handler(
+                tee,
+                path,
+                method,
+                id_key,
+                rvps_client,
+                rvps_certs_lock,
+                mage_lock,
+                auth_policy_engine,
+                signing_policy_engine,
+            )
+        }
+        "authorization" => match method {
+            &Method::GET => Ok(Box::new(AuthorizationPolicyGetHandler::new(
+                auth_policy_engine,
+                rvps_client,
+            ))),
+            &Method::POST => Ok(Box::new(AuthorizationPolicyPostHandler::new(
+                auth_policy_engine,
+                mage_lock,
+                rvps_client,
+            ))),
+            _ => Err(anyhow!("unsupported authorization endpoint: {}", path.join("/"))),
+        },
+        "signing" => match (method, path) {
+            (&Method::GET, [.., "identity-provider"]) => Ok(Box::new(IdentityProviderGetHandler::new(
+                identity_provider_url
+            ))),
+            (&Method::POST, [.., "policy"]) => Ok(Box::new(SigningPolicyPostHandler::new(
+                signing_policy_engine,
+                rvps_client,
+                rvps_certs_lock,
+            ))),
+            (&Method::DELETE, [.., "policy"]) => Ok(Box::new(SigningPolicyDeleteHandler::new(
+                signing_policy_engine,
+                rvps_client,
+                rvps_certs_lock,
+            ))),
+            (&Method::DELETE, [.., "key", digest]) => {
+                Ok(Box::new(SigningKeyDeleteHandler::new(
+                    signing_policy_engine,
+                    rvps_client,
+                    rvps_certs_lock,
+                    digest,
+                )))
+            }
+            _ => Err(anyhow!("unsupported signing endpoint: {}", path.join("/"))),
+        },
         _ => Err(anyhow!("unsupported request type: {req_type}")),
     }
-}
-
-pub fn get_auth_policy_handler(
-    policy_engine: PolicyEngine<Regorus>,
-    storage: Arc<dyn KeyValueStorage>,
-    mags_lock: Arc<Mutex<()>>,
-) -> AuthorizationPolicyHandler {
-    AuthorizationPolicyHandler::new(policy_engine, storage, mags_lock)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use key_value_storage::memory::MemoryKeyValueStorage;
+    use key_value_storage::KeyValueStorage;
     use openssl::ec::{EcGroup, EcKey};
     use openssl::nid::Nid;
-    use rstest::rstest;
 
     fn memory_storage() -> Arc<dyn KeyValueStorage> {
         Arc::new(MemoryKeyValueStorage::default())
@@ -89,66 +116,22 @@ mod tests {
     }
 
     #[test]
-    fn test_get_request_handler_snp() {
-        let result = get_request_handler(
-            "measurement",
-            Tee::Snp,
-            test_ec_key(),
-            false,
-            None,
-            Arc::new(Mutex::new(())),
-            memory_policy_engine(),
-            memory_policy_engine(),
-            memory_storage(),
-        );
-        if let Err(e) = result {
-            panic!("expected Ok, got Err: {e}");
-        }
-    }
-
-    #[rstest]
-    #[case(Tee::Tdx)]
-    #[case(Tee::Sgx)]
-    #[case(Tee::Cca)]
-    fn test_get_request_handler_unsupported_tee(#[case] tee: Tee) {
-        let result = get_request_handler(
-            "measurement",
-            tee,
-            test_ec_key(),
-            false,
-            None,
-            Arc::new(Mutex::new(())),
-            memory_policy_engine(),
-            memory_policy_engine(),
-            memory_storage(),
-        );
-        match result {
-            Err(e) => assert!(
-                e.to_string().contains("unsupported TEE type"),
-                "unexpected: {e}"
-            ),
-            Ok(_) => panic!("expected error for unsupported TEE type"),
-        }
-    }
-
-    #[test]
     fn test_get_request_handler_unsupported_type() {
         let result = get_request_handler(
             "unknown",
-            Tee::Snp,
+            Some(Tee::Snp),
+            &["measurement", "snp"],
+            &Method::POST,
             test_ec_key(),
-            false,
             None,
+            Arc::new(Mutex::new(())),
             Arc::new(Mutex::new(())),
             memory_policy_engine(),
             memory_policy_engine(),
-            memory_storage(),
+            None,
         );
         match result {
-            Err(e) => assert!(
-                e.to_string().contains("unsupported request type"),
-                "unexpected: {e}"
-            ),
+            Err(e) => assert!(e.to_string().contains("unsupported"), "unexpected: {e}"),
             Ok(_) => panic!("expected error for unsupported request type"),
         }
     }

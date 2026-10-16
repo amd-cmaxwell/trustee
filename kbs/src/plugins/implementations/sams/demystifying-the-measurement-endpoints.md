@@ -18,8 +18,9 @@ None
     kernel_hash_str: "<Precalculated Cryptographic Hash of the kernel file the CVM will use>",
     append: "<Kernel Cmdline Arguments...>",
     guest_policy: <Guest Policy bitflag as an integer>,
-    family_id: "<String Identifying which group to which the ID Block belongs (16 bytes max)",
-    image_id: "<String Identifying which CVM the ID Block belongs (16 bytes max)",
+    guest_svn: <Guest Security Version Number as a u32 (optional, defaults to 0)>,
+    family_id: "<Hex-encoded 16-byte identifier for the group to which the ID Block belongs>",
+    image_id: "<Hex-encoded 16-byte identifier for the CVM image>"
 }
 ```
 
@@ -43,11 +44,11 @@ the response body contains:
         {
             "measurement": "<CVM Launch Measurement>",
             "id-block": "base64({
-                LaunchMeasurement = "< measurement >",
+                LaunchMeasurement = "<measurement>",
                 GuestPolicy,
                 FamilyID,
                 ImageID,
-                GuestSVN = The current Minimum Acceptable Guest SVN (MAGS), as pulled from RVPS,
+                GuestSVN = guest-owner-specified SVN (defaults to 0),
                 ...
             })"
         }
@@ -70,9 +71,10 @@ the response body contains:
     initrd_hash_str: "<Precalculated Cryptographic Hash of the initial filesystem the CVM will use>",
     kernel_hash_str: "<Precalculated Cryptographic Hash of the kernel file the CVM will use>",
     append: "<Kernel Cmdline Arguments...>",
-    guest_policy: <Guest Policy bitflag as an integer>,
-    family_id: "<String Identifying which group to which the ID Block belongs (16 bytes max)",
-    image_id: "<String Identifying which CVM the ID Block belongs (16 bytes max)",
+    guest_policy: <Guest Policy bitflag as an integer (REQUIRED for /auth)>,
+    guest_svn: <Guest Security Version Number as a u32 (optional, defaults to 0)>,
+    family_id: "<Hex-encoded 16-byte identifier (REQUIRED for /auth)>",
+    image_id: "<Hex-encoded 16-byte identifier (REQUIRED for /auth)>"
 }
 ```
 
@@ -91,7 +93,7 @@ the response body contains:
                 GuestPolicy,
                 FamilyID,
                 ImageID,
-                GuestSVN = The current Minimum Acceptable Guest SVN (MAGS), as pulled from RVPS,
+                GuestSVN = guest-owner-specified SVN (defaults to 0),
                 ...
             })",
             "id-auth": "base64({
@@ -102,9 +104,22 @@ the response body contains:
                 AuthKeyAlgo = 0,
                 AuthKeyDigest = 0
             })",
-            "id-key": "<SAMS Public Key>"
+            "id-key": "<SAMS Public Key (DER, base64-encoded)>",
+            "cage": {
+                "mage": <Current Minimum Authorized Generation Epoch as u32>,
+                "id_block_hash": "<SHA-384 hex digest of the IdBlock bytes>",
+                "signature": "<base64 ECDSA-SHA384 signature over canonical JSON {\"id_block_hash\": \"...\", \"mage\": N, \"salt\": \"...\"}>"
+            }
         }
         ```
+    > **CAGE (SAGE Protocol):** The CAGE binds the authorization policy epoch to this
+    > specific IdBlock. The signature covers the `id_block_hash`, `mage`, and a
+    > per-epoch salt (mixed into the signature but not returned in the response),
+    > preventing a malicious host from pairing a CAGE with an IdBlock it was
+    > not issued for. The salt prevents replay if the MAGE is ever reset; verifiers
+    > retrieve the salt for each epoch directly from RVPS. See
+    > [Reclaiming the Guest SVN Field](reclaiming-the-guest-svn-field.md) for the full
+    > design rationale.
     - Error Codes:
         1. If you fail to provide the minimum set of Launch Params to calculate a measurement:
             `400 - Bad Request`
@@ -125,7 +140,7 @@ SAMS evaluates the guest-owner's **signing-policy** with the launch params as in
                 GuestPolicy,
                 FamilyID,
                 ImageID,
-                GuestSVN = The current Minimum Acceptable Guest SVN (MAGS), as pulled from RVPS,
+                GuestSVN = guest-owner-specified SVN (defaults to 0),
                 ...
             })",            
             "id-auth": "base64({
@@ -136,8 +151,13 @@ SAMS evaluates the guest-owner's **signing-policy** with the launch params as in
                 AuthKeyAlgo = <integer rep of Ecdsa-384>,
                 AuthKeyDigest = SHA-384(Policy-Selected Guest Owner Pub Key)
             })",
-            "id-key": "<SAMS Public Key>",
-            "author-key": "<Guest Owner Public Key (selected by signing-policy)>"
+            "id-key": "<SAMS Public Key (DER, base64-encoded)>",
+            "author-key": "<Guest Owner Public Key (selected by signing-policy)>",
+            "cage": {
+                "mage": <Current Minimum Authorized Generation Epoch as u32>,
+                "id_block_hash": "<SHA-384 hex digest of the IdBlock bytes>",
+                "signature": "<base64 ECDSA-SHA384 signature over canonical JSON {\"id_block_hash\": \"...\", \"mage\": N, \"salt\": \"...\"}>"
+            }
         }
         ```
     Additionally, SAMS:
