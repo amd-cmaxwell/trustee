@@ -22,6 +22,15 @@ The Definition of Done for any solution must meet these 3 criteria:
 - Instead of Minimum Accepted Guest SVN (MAGS), we call this counter the Minimum Authorized Generation Epoch (MAGE)
 - Trustee Admins will still be able to conditionally increase the monotonic counter when updating the SAMS Authorization Policy
 - When signing an IDBlock, SAMS will retrieve the MAGE from RVPS & sign it using SAMS' private key. 
+    >Note: 
+    > - The CAGE should be **bound to the IdBlock it tags** to avoid a malicious host pairing a CAGE with an IdBlock that it was not intended to be paired with
+    >   - **To account for this, we should mix the IdBlock's IdBlockSig into the CAGE Sig**
+    > - Also, we should take steps to prevent replay attacks if the MAGE ever does get reset to a lower value,
+    >   - **To account for this, we should *also* mix a Salt into the CAGE Sig**
+    >   - **To allow Verifier Policy Owners to account for Authorization Policy drift, We should store the Salt for each *iteration* of the MAGE in RVPS**
+    >       - That way the SNP Verifier can affirm that a CAGE was valid ***at the time it was issued***, even if it was issued in a previous AGE
+    >       - In turn that would allow Verifier Policy Owners to make rules spanning multiple AGEs,  
+    >           - E.g, "Accept the report IFF it was generated in AGE=2 OR AGE=3"
 - The combination of MAGE + Signature constitutes the Current Authorized Generation Epoch (CAGE), as endorsed by Trustee.
 - Upon Authorizing a launch configuration, SAMS' Measurement Endpoints will return the CAGE alongside the generated ID Block
 - ID Block users will be expected to include the CAGE in their CVM InitData.
@@ -39,4 +48,5 @@ The SAGE protocol can be summarized in one pnuemonic:
 ## Special Thanks to:
 - Katherine Kim
 - Diego Gonzalez
+- Amanda Liem
 - Mark Gentry
