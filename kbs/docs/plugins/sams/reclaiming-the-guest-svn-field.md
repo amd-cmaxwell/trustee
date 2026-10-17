@@ -17,9 +17,9 @@ The Definition of Done for any solution must meet these 3 criteria:
 2. The version tag MUST NOT occupy the the Guest SVN field of the IdBlock
 3. The version tag MUST show an endorsement from Trustee which CANNOT be unduely replicated
 
-## The Solution -- Signed Authorization Generation Epoch (SAGE) Protocol
+## The Solution -- Signed Audit Generation Epoch (SAGE) Protocol
 - SAMS still holds a monotonic counter in RVPS for tracking security changes to the SAMS Authorization policy.
-- Instead of Minimum Accepted Guest SVN (MAGS), we call this counter the Minimum Authorized Generation Epoch (MAGE)
+- Instead of Minimum Accepted Guest SVN (MAGS), we call this counter the Measurement Audit Generation Epoch (MAGE)
 - Trustee Admins will still be able to conditionally increase the monotonic counter when updating the SAMS Authorization Policy
 - When signing an IDBlock, SAMS will 
     1. Hash the IdBlock struct 
@@ -27,7 +27,7 @@ The Definition of Done for any solution must meet these 3 criteria:
     2. Retrieve the MAGE & the current Salt from RVPS
     3. Combine the MAGE, IdBlock Hash, & Salt into a structure 
     4. Sign that structure using SAMS' private key. 
-- The combination of MAGE + IDBlock Hash + Signature constitutes the Current Authorized Generation Epoch (CAGE), as endorsed by Trustee.
+- The combination of MAGE + IDBlock Hash + Signature constitutes the Current Audit Generation Epoch (CAGE), as endorsed by Trustee.
     >Rationale: 
     > - The CAGE should be **bound to the IdBlock it tags** to avoid a malicious host pairing a CAGE with an IdBlock that it was not intended to be paired with
     >   - **To account for this, we should include a Hash of the IdBlock in the CAGE**
@@ -54,7 +54,7 @@ The Definition of Done for any solution must meet these 3 criteria:
         - The reconstructed IdBlockHash
         - The expected Salt for the AGE
 - If the signature verification check passes, SAMS then compares the CVM's AGE against the current MAGE in RVPS
-- If the CVM's AGE < the MAGE then we conclude that the IdBlock is outdated, i.e. it was generated under a previous Authentication Generation Epoch (AGE).
+- If the CVM's AGE < the MAGE then we conclude that the IdBlock is outdated, i.e. it was generated under a previous Audit Generation Epoch (AGE).
 - **Verifier policies should enforce the withholding of secret data from CVM's using outdated IdBlocks**
 - **Non-compliant CVMs will need to be re-launched after obtaining NEW IdBlocks from SAMS pertaining to the *Current* AGE**.
 

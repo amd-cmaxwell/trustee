@@ -59,14 +59,14 @@ pub fn get_measurement_handler(
         (Tee::Snp, _) => {
             cfg_if::cfg_if! {
                 if #[cfg(feature = "sams-snp")] {
-                    let is_auth = path.last() == Some(&"auth");
+                    let signing_requested = path.last() == Some(&"signed");
                     match method {
                         &Method::GET => Ok(Box::new(MeasurementHandler::SnpGet(
-                            SnpMeasurementGetHandler::new(is_auth),
+                            SnpMeasurementGetHandler::new(signing_requested),
                         ))),
                         &Method::POST => Ok(Box::new(MeasurementHandler::SnpPost(SnpMeasurementPostHandler::new(
                             id_key,
-                            is_auth,
+                            signing_requested,
                             rvps_client,
                             rvps_certs_lock,
                             mage_lock,

@@ -420,7 +420,7 @@ mod tests {
             .handle_with_headers(
                 b"",
                 &HashMap::new(),
-                &["measurement", "snp", "auth"],
+                &["measurement", "snp", "signed"],
                 &Method::GET,
                 &headers,
                 None,

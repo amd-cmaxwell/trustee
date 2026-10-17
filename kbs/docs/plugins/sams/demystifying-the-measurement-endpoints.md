@@ -56,7 +56,7 @@ the response body contains:
     - Error Codes
         1. If you fail to provide the minimum set of Launch Params to calculate a measurement:
             `400 - Bad Request`
-# POST /kbs/v0/sams/measurement/snp/auth
+# POST /kbs/v0/sams/measurement/snp/signed
 ## Headers
 `Authorization: Bearer <JWT containing the field "certificate": "<guest-owner client certificate (PEM)>">` _(optional)_
 
@@ -106,13 +106,13 @@ the response body contains:
             })",
             "id-key": "<SAMS Public Key (DER, base64-encoded)>",
             "cage": {
-                "mage": <Current Minimum Authorized Generation Epoch as u32>,
+                "mage": <Current Measurement Audit Generation Epoch as u32>,
                 "id_block_hash": "<SHA-384 hex digest of the IdBlock bytes>",
                 "signature": "<base64 ECDSA-SHA384 signature over canonical JSON {\"id_block_hash\": \"...\", \"mage\": N, \"salt\": \"...\"}>"
             }
         }
         ```
-    > **CAGE (SAGE Protocol):** The CAGE binds the authorization policy epoch to this
+    > **CAGE (SAGE Protocol):** The CAGE binds the audit generation epoch to this
     > specific IdBlock. The signature covers the `id_block_hash`, `mage`, and a
     > per-epoch salt (mixed into the signature but not returned in the response),
     > preventing a malicious host from pairing a CAGE with an IdBlock it was
@@ -154,7 +154,7 @@ SAMS evaluates the guest-owner's **signing-policy** with the launch params as in
             "id-key": "<SAMS Public Key (DER, base64-encoded)>",
             "author-key": "<Guest Owner Public Key (selected by signing-policy)>",
             "cage": {
-                "mage": <Current Minimum Authorized Generation Epoch as u32>,
+                "mage": <Current Measurement Audit Generation Epoch as u32>,
                 "id_block_hash": "<SHA-384 hex digest of the IdBlock bytes>",
                 "signature": "<base64 ECDSA-SHA384 signature over canonical JSON {\"id_block_hash\": \"...\", \"mage\": N, \"salt\": \"...\"}>"
             }

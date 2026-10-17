@@ -150,22 +150,22 @@ fn sign_cage_token(
 }
 
 pub struct MeasurementGetHandler {
-    is_auth: bool,
+    signing_requested: bool,
 }
 
 impl MeasurementGetHandler {
-    pub fn new(is_auth: bool) -> Self {
-        Self { is_auth }
+    pub fn new(signing_requested: bool) -> Self {
+        Self { signing_requested }
     }
 }
 
 #[async_trait::async_trait]
 impl RequestHandler for MeasurementGetHandler {
     async fn handle(&mut self, _body: &[u8], _headers: &HeaderMap) -> Result<Vec<u8>> {
-        if self.is_auth {
+        if self.signing_requested {
             Err(PluginHttpError::method_not_allowed_with_allow(
                 "GET is not supported for this endpoint. \
-                 Use POST /kbs/v0/sams/measurement/snp/auth with a JSON body containing: \
+                 Use POST /kbs/v0/sams/measurement/snp/signed with a JSON body containing: \
                  vcpus (u32), vcpu_type (CpuType), guest_features (GuestFeatures), \
                  ovmf_measurement (OvmfMeasurement), and required fields: \
                  family_id (hex string, 16 bytes), image_id (hex string, 16 bytes), \
@@ -192,7 +192,7 @@ impl RequestHandler for MeasurementGetHandler {
 
 pub struct MeasurementPostHandler {
     id_key: EcKey<Private>,
-    is_auth: bool,
+    signing_requested: bool,
     rvps_client: Option<Arc<dyn RvpsClient>>,
     rvps_certs_lock: Arc<Mutex<()>>,
     mage_lock: Arc<Mutex<()>>,
@@ -204,7 +204,7 @@ impl MeasurementPostHandler {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         id_key: EcKey<Private>,
-        is_auth: bool,
+        signing_requested: bool,
         rvps_client: Option<Arc<dyn RvpsClient>>,
         rvps_certs_lock: Arc<Mutex<()>>,
         mage_lock: Arc<Mutex<()>>,
@@ -213,7 +213,7 @@ impl MeasurementPostHandler {
     ) -> Self {
         Self {
             id_key,
-            is_auth,
+            signing_requested,
             rvps_client,
             rvps_certs_lock,
             mage_lock,
@@ -228,9 +228,9 @@ impl RequestHandler for MeasurementPostHandler {
     async fn handle(&mut self, body: &[u8], headers: &HeaderMap) -> Result<Vec<u8>> {
         let req: SnpMeasurementRequest = serde_json::from_slice(body)?;
         let guest_owner_cert = extract_guest_owner_cert(headers);
-        let is_auth = self.is_auth;
+        let signing_requested = self.signing_requested;
 
-        if is_auth
+        if signing_requested
             && (req.family_id.is_none() || req.image_id.is_none() || req.guest_policy.is_none())
         {
             return Err(PluginHttpError::bad_request(
@@ -238,7 +238,7 @@ impl RequestHandler for MeasurementPostHandler {
             ));
         }
 
-        if is_auth {
+        if signing_requested {
             if let Ok(policy) = self.auth_policy_engine.get_policy(AUTH_POLICY_ID).await {
                 let mut input_value = serde_json::to_value(&req)?;
                 if let Some(cert) = &guest_owner_cert {
@@ -349,7 +349,7 @@ impl RequestHandler for MeasurementPostHandler {
                 .map_err(|e| anyhow!("failed to serialize IdBlock: {e}"))?;
             id_block_b64 = Some(STANDARD.encode(block_bytes.as_ref()));
 
-            if is_auth {
+            if signing_requested {
                 let mut id_auth = IdAuth::default()
                     .sign_id_block(DEFAULT_KEY_ALGO, self.id_key.clone(), &block)
                     .map_err(|e| anyhow!("failed to sign IdBlock: {e}"))?;
@@ -899,7 +899,7 @@ mod tests {
         let plugin_err = err.downcast_ref::<PluginHttpError>().unwrap();
         assert_eq!(plugin_err.status, 405);
         assert!(plugin_err.message.contains("Use POST"));
-        assert!(plugin_err.message.contains("/measurement/snp/auth"));
+        assert!(plugin_err.message.contains("/measurement/snp/signed"));
         assert!(plugin_err.message.contains("family_id"));
         assert!(plugin_err.message.contains("certificate"));
         assert_eq!(

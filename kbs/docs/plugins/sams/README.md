@@ -18,7 +18,7 @@ API
 
 ### POST /authorization/policy
 #### Description:
-Admin sets the policy that gates ID Block issuance. Can also bump the MAGE counter (Minimum Authorized Generation Epoch) to invalidate stale ID Blocks.
+Admin sets the policy that gates ID Block issuance. Can also bump the MAGE counter (Measurement Audit Generation Epoch) to invalidate stale ID Blocks.
 #### Requires Admin?
 - Yes
 #### Request Params:
@@ -102,7 +102,7 @@ Primary endpoint for Kata Runtime at CVM launch. Like `/measurement/<tee>/` but 
   - `"measurement"`, `"id-block"` (as above)
   - `"id-auth"` (base64-encoded IdAuth with SAMS-only signing: AuthKey fields zeroed)
   - `"id-key"` (SAMS Public Key)
-  - `"cage"` — a JSON object `{"mage": <current MAGE>, "signature": "<base64 ECDSA-SHA384 signature>"}` (the Signed Authorization Generation Epoch)
+  - `"cage"` — a JSON object `{"mage": <current MAGE>, "signature": "<base64 ECDSA-SHA384 signature>"}` (the Signed Audit Generation Epoch)
 - **All of the above + registered guest-owner client cert in Bearer Token:**
   - SAMS evaluates the guest-owner's **signing-policy** (a Rego policy uploaded during registration) with the launch params as input. The policy selects which signing keypair to use by outputting `data.policy.pubkey` and `data.policy.privkey` (PEM strings).
   - `"id-auth"` includes guest-owner signing (IdKeySig, AuthKeyAlgo, AuthKeyDigest populated using the policy-selected keys)
@@ -290,8 +290,8 @@ sequenceDiagram
 When `requirePreVerification` is true, Kata Runtime requests an ID Block from
 the SAMS plugin. SAMS optionally pre-verifies each launch parameter against RVPS
 reference values before computing the expected launch measurement and signing the
-ID Block. SAMS reads the current Minimum Authorized Generation Epoch (MAGE) and signs it to produce a CAGE
-(Certified Authorization Generation Epoch), which is returned alongside the ID Block so
+ID Block. SAMS reads the current Measurement Audit Generation Epoch (MAGE) and signs it to produce a CAGE
+(Certified Audit Generation Epoch), which is returned alongside the ID Block so
 that stale ID Blocks can be rejected during attestation.
 
 If `requirePreVerification` is not true, the current (non-SAMS) flow is used and
@@ -323,7 +323,7 @@ sequenceDiagram
     alt requirePreVerification is NOT true
         note left of kata_runtime: Fallback: launch CVM<br>without ID Block<br>(current flow)
     else requirePreVerification is true
-        kata_runtime ->> api: POST /measurement/snp<br>or POST /measurement/snp/auth
+        kata_runtime ->> api: POST /measurement/snp<br>or POST /measurement/snp/signed
         api ->> sams: Forward request
 
         note over kata_runtime, sams: LaunchParams = {vcpus, ovmf_measurement,<br>kernel_hash, initrd_hash, ...}
@@ -355,11 +355,11 @@ sequenceDiagram
         alt /measurement/snp (unauthenticated)
             sams -->> kata_runtime: ID Block response
             note over sams, kata_runtime: Response contains:<br>- measurement<br>- id-block (if IDBlock metadata provided)
-        else /measurement/snp/auth (no guest-owner cert)
+        else /measurement/snp/signed (no guest-owner cert)
             sams ->> sams: Create IdAuth (SAMS-only signing,<br>AuthKey fields zeroed)
             sams -->> kata_runtime: ID Block + IdAuth response
             note over sams, kata_runtime: Response contains:<br>- measurement, id-block<br>- id-auth (SAMS-only)<br>- id-key (SAMS PubKey)<br>- cage (MAGE + ECDSA signature)
-        else /measurement/snp/auth (with guest-owner cert)
+        else /measurement/snp/signed (with guest-owner cert)
             sams ->> policy_engine: Evaluate guest-owner signing-policy
             note over sams, policy_engine: input = LaunchParams<br>rules = [data.policy.pubkey,<br>data.policy.privkey]
             policy_engine -->> sams: Signing keypair (PEM)
@@ -682,6 +682,6 @@ sequenceDiagram
 
 Design Documents
 ---
-- [Demystifying the Measurement Endpoints](demystifying-the-measurement-endpoints.md) — detailed request/response schemas for `/measurement/snp` and `/measurement/snp/auth`
+- [Demystifying the Measurement Endpoints](demystifying-the-measurement-endpoints.md) — detailed request/response schemas for `/measurement/snp` and `/measurement/snp/signed`
 - [Addendum on Dynamic Auth Keys](addendum-on-dynamic-auth-keys.md) — guest-owner signing-policy, mTLS proxy authentication, and dynamic AuthKey signing design
 - [Improvements & Open Questions](IMPROVEMENTS.md) — tracked improvements and open design questions

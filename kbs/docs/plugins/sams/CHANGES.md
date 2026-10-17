@@ -14,7 +14,7 @@ on a pod, the standard flow is used unchanged.
 STANDARD                              WITH SAMS
 ────────                              ─────────
                                       Kata Runtime ──> SAMS
-                                        POST /measurement/snp/auth
+                                        POST /measurement/snp/signed
                                       SAMS:
                                         pre-verify params (policy)
                                         compute measurement
@@ -60,7 +60,7 @@ a misconfigured guest never reaches the attestation phase.
 
 ## New Concepts
 
-- **MAGE/CAGE** -- MAGE is a monotonic counter tracking authorization policy generations. SAMS signs the MAGE to produce a CAGE (Current Authorized Generation Epoch). The CAGE is returned alongside signed ID Blocks and expected to be placed in CVM InitData for verification during attestation.
+- **MAGE/CAGE** -- MAGE is a monotonic counter tracking audit generations. SAMS signs the MAGE to produce a CAGE (Current Audit Generation Epoch). The CAGE is returned alongside signed ID Blocks and expected to be placed in CVM InitData for verification during attestation.
 - **Signing-policies** -- Guest-owners upload Rego policies (over mTLS) mapping launch params to signing keypairs. SAMS evaluates server-side; private keys never reach the untrusted host.
 - **Authorization policy** -- Admin Rego policy gating ID Block issuance. Rejects non-compliant configs before they can boot.
 

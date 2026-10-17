@@ -9,7 +9,7 @@ use crate::plugins::implementations::sams::rvps_client::RvpsClient;
 
 pub const RVPS_GUEST_OWNER_CERTS_KEY: &str = "guest-owner-certs";
 pub const RVPS_GUEST_OWNER_PUBKEYS_KEY: &str = "guest-owner-pubkeys";
-pub const MAGE_KEY: &str = "minimum_authorized_generation_epoch";
+pub const MAGE_KEY: &str = "measurement_audit_generation_epoch";
 const RVPS_SAGE_SALTS_KEY: &str = "sage-salts";
 
 pub fn build_rvps_message(certs_map: &HashMap<String, Vec<String>>) -> Result<String> {

@@ -16,7 +16,7 @@ SAGEST copies the process from its predecessor, but implements it using Signed J
 - JSON Web Tokens allow for the encoding of even more structured identity data inside each distributed CAGE. They can enable the graceful storage of whole IDBlock / IdAuth structures (which are not present in the attestion report itself) inside of the CAGE
 
 ## Usage details in SAMS
-- SAMS Measurement Endpoints will switch from distrubuting Current Authorized Generation Epoch (CAGE) blobs alongside issued IdBlocks & IdAuth structures to distributing **CAGE Tokens** (JWTs) alongside the aformentioned structures.
+- SAMS Measurement Endpoints will switch from distrubuting Current Audit Generation Epoch (CAGE) blobs alongside issued IdBlocks & IdAuth structures to distributing **CAGE Tokens** (JWTs) alongside the aformentioned structures.
 - A single CAGE Token will contain:
     1. The full IdBlock & IdAuth structs for the IDBlock being described, serialized to JSON 
     2. The Current MAGE as pulled from the RVPS

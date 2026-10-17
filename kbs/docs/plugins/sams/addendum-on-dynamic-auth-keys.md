@@ -80,7 +80,7 @@ privkey := "<staging PEM private key>" if {
 
 ### Requesting an ID Block
 - ***From the UNTRUSTED Host:***
-The ID Block Requester (Kata-Runtime) can opt to send the `/sams/measurement/snp/auth` Endpoint a Bearer Token containing a JWT with the Guest Owner's client certificate in the `"certificate"` claim. Since the certificate is public, it is safe to give to the untrusted host.
+The ID Block Requester (Kata-Runtime) can opt to send the `/sams/measurement/snp/signed` Endpoint a Bearer Token containing a JWT with the Guest Owner's client certificate in the `"certificate"` claim. Since the certificate is public, it is safe to give to the untrusted host.
 Doing so will trigger SAMS to evaluate the Guest Owner's signing-policy and use the resulting keypair in the produced `IDAuth` information.
 
     > **Security Note:** Possession of the public certificate does NOT grant the ability to register or revoke signing-policies — that requires the mTLS private key for the TLS handshake with the proxy. This separation ensures it is safe to give the certificate to the untrusted kata-runtime.
