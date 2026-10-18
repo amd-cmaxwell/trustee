@@ -402,10 +402,10 @@ sequenceDiagram
 
     kata_runtime ->> kata_runtime: Encode hypervisor params<br>from SAMS response
     note over kata_runtime: id-block = SAMS-provided id-block<br>id-auth = SAMS-provided id-auth<br>(AuthKey signing done by SAMS)
-    note over kata_runtime: author-key-enabled =<br>1 if SAMS response contained "author-key",<br>0 otherwise
+    note over kata_runtime: author-key-enabled =<br>on if SAMS response contained "author-key",<br>off otherwise
 
     kata_runtime ->> hv: Launch CVM with ID Block
-    note over kata_runtime, hv: -object sev-snp-guest,<br>id-block=...,<br>author-key-enabled=0|1,<br>id-auth=...,<br>...
+    note over kata_runtime, hv: -object sev-snp-guest,<br>id-block=...,<br>author-key-enabled=on|off,<br>id-auth=...,<br>...
     hv ->> fw: SNP_LAUNCH
 
     critical SNP_LAUNCH_FINISH
