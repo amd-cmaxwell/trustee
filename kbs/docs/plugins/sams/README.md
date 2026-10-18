@@ -88,7 +88,7 @@ Computes a launch measurement from CVM parameters. Optionally returns a signed I
 
 ---
 
-### POST /measurement/\<tee\>/auth
+### POST /measurement/\<tee\>/signed
 #### Description:
 Primary endpoint for Kata Runtime at CVM launch. Like `/measurement/<tee>/` but also evaluates the authorization policy and produces a signed IdAuth. With a guest-owner cert, evaluates their signing-policy for full AuthKey signing.
 #### Requires Admin?
@@ -102,13 +102,16 @@ Primary endpoint for Kata Runtime at CVM launch. Like `/measurement/<tee>/` but 
   - `"measurement"`, `"id-block"` (as above)
   - `"id-auth"` (base64-encoded IdAuth with SAMS-only signing: AuthKey fields zeroed)
   - `"id-key"` (SAMS Public Key)
-  - `"cage"` — a JSON object `{"mage": <current MAGE>, "signature": "<base64 ECDSA-SHA384 signature>"}` (the Signed Audit Generation Epoch)
+  - `"cage-token"` — a signed JWT (CAGE Token) containing the full IdBlock, IdAuth, MAGE, guest-owner identity, SAMS key, and a salted hash (see [SAGEST](sage-v2-sagest.md))
 - **All of the above + registered guest-owner client cert in Bearer Token:**
   - SAMS evaluates the guest-owner's **signing-policy** (a Rego policy uploaded during registration) with the launch params as input. The policy selects which signing keypair to use by outputting `data.policy.pubkey` and `data.policy.privkey` (PEM strings).
   - `"id-auth"` includes guest-owner signing (IdKeySig, AuthKeyAlgo, AuthKeyDigest populated using the policy-selected keys)
   - `"author-key"` (Guest Owner Public Key, as selected by the signing-policy)
   - The guest-owner's mTLS cert is appended to the RVPS `"guest-owner-certs"` list for the AuthKeyDigest of the policy-selected key (multiple guest-owners sharing a signing key are stored as separate entries under the same digest)
   - The guest-owner's public signing key is stored in the RVPS `"guest-owner-pubkeys"` map, keyed by AuthKeyDigest
+#### Side Effects (MMA Protocol):
+- On every successful response, SAMS writes a Measurement Metadata Object (MMO) to the audit log containing the launch params, IdBlock metadata, guest-owner identity (cert hash or `"anonymous"` if no Bearer Token), MAGE, SAMS key fingerprint, and timestamp.
+- Launch digest computation is cached to avoid redundant crypto on repeated configurations. The cache is keyed on the VM configuration parameters and never requires invalidation (see [Measurement Caching & Auditing](measurement-caching-and-auditing.md)).
 #### Error Codes:
 - `400` — missing required launch params or IDBlock metadata
 - `401` — malformed/expired Bearer Token, invalid cert, or unknown guest-owner (no signing-policy registered)
@@ -152,7 +155,7 @@ The Rego policy receives the launch params as `input` and must define two rules:
 - `data.policy.pubkey` — a PEM-encoded EC public key string
 - `data.policy.privkey` — a PEM-encoded EC private key string
 
-This allows guest-owners to define multiple signing keypairs and have SAMS select the appropriate one based on the launch parameters provided to the `/measurement/<tee>/auth` endpoint.
+This allows guest-owners to define multiple signing keypairs and have SAMS select the appropriate one based on the launch parameters provided to the `/measurement/<tee>/signed` endpoint.
 #### Behavior:
 - Decodes and validates the base64-encoded Rego policy
 - Stores the signing-policy in SAMS internal storage, keyed by the SHA-384 hash of the guest-owner's mTLS client certificate
@@ -290,14 +293,14 @@ sequenceDiagram
 When `requirePreVerification` is true, Kata Runtime requests an ID Block from
 the SAMS plugin. SAMS optionally pre-verifies each launch parameter against RVPS
 reference values before computing the expected launch measurement and signing the
-ID Block. SAMS reads the current Measurement Audit Generation Epoch (MAGE) and signs it to produce a CAGE
-(Certified Audit Generation Epoch), which is returned alongside the ID Block so
+ID Block. SAMS reads the current Measurement Audit Generation Epoch (MAGE) and produces a CAGE Token
+(Current Audit Generation Epoch), a signed JWT returned alongside the ID Block so
 that stale ID Blocks can be rejected during attestation.
 
 If `requirePreVerification` is not true, the current (non-SAMS) flow is used and
 the CVM is launched without an ID Block.
 
-When the request targets the `/auth` endpoint and includes a Bearer Token with a
+When the request targets the `/signed` endpoint and includes a Bearer Token with a
 registered guest owner's client certificate, SAMS evaluates the guest owner's
 **signing-policy** — a Rego policy uploaded during registration — with the launch
 params as input. The policy selects which signing keypair to use, and SAMS signs
@@ -346,7 +349,7 @@ sequenceDiagram
 
         critical Version the IDBlock
             sams ->> sams: Read MAGE from storage
-            sams ->> sams: Sign MAGE to produce CAGE
+            sams ->> sams: Produce CAGE Token (JWT)
         end
         note over sams: From LaunchParams,<br> IDBlock Meta,<br> & Guest SVN from request
         sams ->> sams: Calculate Launch Measurement<br>(sev-snp-measure / create_id_block)
@@ -357,8 +360,9 @@ sequenceDiagram
             note over sams, kata_runtime: Response contains:<br>- measurement<br>- id-block (if IDBlock metadata provided)
         else /measurement/snp/signed (no guest-owner cert)
             sams ->> sams: Create IdAuth (SAMS-only signing,<br>AuthKey fields zeroed)
+            sams ->> sams: Write MMO to audit log<br>(guest owner = anonymous)
             sams -->> kata_runtime: ID Block + IdAuth response
-            note over sams, kata_runtime: Response contains:<br>- measurement, id-block<br>- id-auth (SAMS-only)<br>- id-key (SAMS PubKey)<br>- cage (MAGE + ECDSA signature)
+            note over sams, kata_runtime: Response contains:<br>- measurement, id-block<br>- id-auth (SAMS-only)<br>- id-key (SAMS PubKey)<br>- cage-token (signed JWT)
         else /measurement/snp/signed (with guest-owner cert)
             sams ->> policy_engine: Evaluate guest-owner signing-policy
             note over sams, policy_engine: input = LaunchParams<br>rules = [data.policy.pubkey,<br>data.policy.privkey]
@@ -372,8 +376,9 @@ sequenceDiagram
             sams ->> sams: Create IdAuth (full signing)
             sams ->> rvps: Register guest-owner cert<br>keyed by AuthKeyDigest
             sams ->> rvps: Register guest-owner pubkey<br>keyed by AuthKeyDigest
+            sams ->> sams: Write MMO to audit log<br>(guest owner = cert hash)
             sams -->> kata_runtime: ID Block + IdAuth response
-            note over sams, kata_runtime: Response contains:<br>- measurement, id-block<br>- id-auth (full: IDBlockSig + IdKeySig)<br>- id-key (SAMS PubKey)<br>- author-key (Guest Owner PubKey,<br>  selected by signing-policy)<br>- cage (MAGE + ECDSA signature)
+            note over sams, kata_runtime: Response contains:<br>- measurement, id-block<br>- id-auth (full: IDBlockSig + IdKeySig)<br>- id-key (SAMS PubKey)<br>- author-key (Guest Owner PubKey,<br>  selected by signing-policy)<br>- cage-token (signed JWT)
         end
     end
 ```
@@ -383,7 +388,7 @@ sequenceDiagram
 ##### 3. CVM Launch & Firmware Verification
 
 Kata Runtime passes the SAMS-provided id-block and id-auth directly to the
-hypervisor. When SAMS handled guest-owner authentication (via the `/auth`
+hypervisor. When SAMS handled guest-owner authentication (via the `/signed`
 endpoint), the id-auth already contains the full IdAuth with AuthKey signing
 performed inside SAMS using the guest owner's signing-policy-selected key.
 SNP firmware verifies the signatures and compares the actual launch measurement
@@ -683,5 +688,7 @@ sequenceDiagram
 Design Documents
 ---
 - [Demystifying the Measurement Endpoints](demystifying-the-measurement-endpoints.md) — detailed request/response schemas for `/measurement/snp` and `/measurement/snp/signed`
+- [SAGEv2: SAGEST](sage-v2-sagest.md) — CAGE Token design (JWT-based successor to the SAGEv1 CAGE blob)
+- [Measurement Caching & Auditing (MMA)](measurement-caching-and-auditing.md) — measurement cache and audit log design
 - [Addendum on Dynamic Auth Keys](addendum-on-dynamic-auth-keys.md) — guest-owner signing-policy, mTLS proxy authentication, and dynamic AuthKey signing design
 - [Improvements & Open Questions](IMPROVEMENTS.md) — tracked improvements and open design questions

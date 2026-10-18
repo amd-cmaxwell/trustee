@@ -71,10 +71,10 @@ the response body contains:
     initrd_hash_str: "<Precalculated Cryptographic Hash of the initial filesystem the CVM will use>",
     kernel_hash_str: "<Precalculated Cryptographic Hash of the kernel file the CVM will use>",
     append: "<Kernel Cmdline Arguments...>",
-    guest_policy: <Guest Policy bitflag as an integer (REQUIRED for /auth)>,
+    guest_policy: <Guest Policy bitflag as an integer (REQUIRED for /signed)>,
     guest_svn: <Guest Security Version Number as a u32 (optional, defaults to 0)>,
-    family_id: "<Hex-encoded 16-byte identifier (REQUIRED for /auth)>",
-    image_id: "<Hex-encoded 16-byte identifier (REQUIRED for /auth)>"
+    family_id: "<Hex-encoded 16-byte identifier (REQUIRED for /signed)>",
+    image_id: "<Hex-encoded 16-byte identifier (REQUIRED for /signed)>"
 }
 ```
 
@@ -105,25 +105,21 @@ the response body contains:
                 AuthKeyDigest = 0
             })",
             "id-key": "<SAMS Public Key (DER, base64-encoded)>",
-            "cage": {
-                "mage": <Current Measurement Audit Generation Epoch as u32>,
-                "id_block_hash": "<SHA-384 hex digest of the IdBlock bytes>",
-                "signature": "<base64 ECDSA-SHA384 signature over canonical JSON {\"id_block_hash\": \"...\", \"mage\": N, \"salt\": \"...\"}>"
-            }
+            "cage-token": "<signed JWT (CAGE Token)>"
         }
         ```
-    > **CAGE (SAGE Protocol):** The CAGE binds the audit generation epoch to this
-    > specific IdBlock. The signature covers the `id_block_hash`, `mage`, and a
-    > per-epoch salt (mixed into the signature but not returned in the response),
-    > preventing a malicious host from pairing a CAGE with an IdBlock it was
-    > not issued for. The salt prevents replay if the MAGE is ever reset; verifiers
-    > retrieve the salt for each epoch directly from RVPS. See
-    > [Reclaiming the Guest SVN Field](reclaiming-the-guest-svn-field.md) for the full
-    > design rationale.
+    > **CAGE Token (SAGEST Protocol):** The CAGE Token is a JWT signed by the SAMS
+    > private key. Its claims contain the full IdBlock, IdAuth, current MAGE,
+    > guest-owner identity (if any), SAMS public key, and a salted hash binding
+    > the token to its contents and epoch. The per-epoch salt prevents replay if
+    > the MAGE is ever reset; verifiers retrieve the salt from RVPS. See
+    > [SAGEv2: SAGEST](sage-v2-sagest.md) for the full design and
+    > [Reclaiming the Guest SVN Field](reclaiming-the-guest-svn-field.md) for the
+    > original SAGE rationale.
     - Error Codes:
         1. If you fail to provide the minimum set of Launch Params to calculate a measurement:
             `400 - Bad Request`
-        2. If you fail to provide the IDBlock Metadata fields (`FAMILY_ID` & `IMAGE_ID`):
+        2. If you fail to provide the IDBlock Metadata fields (`GUEST_POLICY`, `FAMILY_ID`, & `IMAGE_ID`):
             `400 - Bad Request`
         3. If CVM Launch is Forbidden by the authorization policy:
             `403 - Forbidden` 
@@ -153,11 +149,7 @@ SAMS evaluates the guest-owner's **signing-policy** with the launch params as in
             })",
             "id-key": "<SAMS Public Key (DER, base64-encoded)>",
             "author-key": "<Guest Owner Public Key (selected by signing-policy)>",
-            "cage": {
-                "mage": <Current Measurement Audit Generation Epoch as u32>,
-                "id_block_hash": "<SHA-384 hex digest of the IdBlock bytes>",
-                "signature": "<base64 ECDSA-SHA384 signature over canonical JSON {\"id_block_hash\": \"...\", \"mage\": N, \"salt\": \"...\"}>"
-            }
+            "cage-token": "<signed JWT (CAGE Token)>"
         }
         ```
     Additionally, SAMS:
@@ -166,7 +158,7 @@ SAMS evaluates the guest-owner's **signing-policy** with the launch params as in
     - Error Codes:
         1. If you fail to provide the minimum set of Launch Params to calculate a measurement:
             `400 - Bad Request`
-        2. If you fail to provide the IDBlock Metadata fields (`FAMILY_ID` & `IMAGE_ID`):
+        2. If you fail to provide the IDBlock Metadata fields (`GUEST_POLICY`, `FAMILY_ID`, & `IMAGE_ID`):
             `400 - Bad Request`
         3. If your Bearer Token is malformed:
             `401 - Unauthorized`

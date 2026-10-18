@@ -102,7 +102,7 @@ Doing so will trigger SAMS to evaluate the Guest Owner's signing-policy and use 
         2. Check that a signing-policy is stored for that cert hash
         3. Reject the request with `401 - Unauthorized` if no signing-policy is found
         4. Parse the certificate into a structured JSON object (`guest_owner_cert`) containing `subject`, `issuer`, `serial`, `not_before`, `not_after`, and `extensions` fields, and pass it into the authorization policy engine alongside the CVM launch parameters & ID Block metadata.
-            - This allows SAMS policy owners to make assertions about the Guest Owner's client certificate fields, e.g. `input.guest_owner_cert.subject.O == "Acme Corp"` or `input.guest_owner_cert.extensions.subject_alt_names[0] == "guest.example.com"`
+            - This allows Authorization Policy owners to make assertions about the Guest Owner's client certificate fields, e.g. `input.guest_owner_cert.subject.O == "Acme Corp"` or `input.guest_owner_cert.extensions.subject_alt_names[0] == "guest.example.com"`
     
     - **If evaluation of the authorization policy returns "authorized",**
     SAMS will:

@@ -66,7 +66,11 @@ The MMO is the audit record written on each successful `/measurement/snp/signed`
 - **Launch params**: vcpus, vcpu_type, vmm_type, guest_features, ovmf_measurement,
   kernel_hash_str, initrd_hash_str, append
 - **IdBlock metadata**: family_id, image_id, guest_policy, guest_svn
-- **Guest owner identity**: hash of the guest-owner certificate (or full PEM if configured)
+- **Guest owner identity**: hash of the guest-owner certificate (or full PEM if configured).
+  When no Bearer Token with a valid guest-owner certificate is provided, the field
+  is set to `"anonymous"` or the originating IP address of the request, depending
+  on configuration. This covers the case where an authorized set of launch params
+  is submitted to `/measurement/snp/signed` without guest-owner identification.
 - **MAGE**: the measurement audit generation epoch at time of signing
 - **SAMS key fingerprint**: hash of the SAMS public key used to sign the IdAuth
 - **Timestamp**: ISO 8601 UTC

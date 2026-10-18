@@ -294,7 +294,7 @@ impl RequestHandler for MeasurementPostHandler {
 
                 if !authorized {
                     return Err(PluginHttpError::forbidden(
-                        "launch params rejected by SAMS policy",
+                        "launch params rejected by Authorization Policy",
                     ));
                 }
             }

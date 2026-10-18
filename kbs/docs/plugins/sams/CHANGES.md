@@ -60,9 +60,10 @@ a misconfigured guest never reaches the attestation phase.
 
 ## New Concepts
 
-- **MAGE/CAGE** -- MAGE is a monotonic counter tracking audit generations. SAMS signs the MAGE to produce a CAGE (Current Audit Generation Epoch). The CAGE is returned alongside signed ID Blocks and expected to be placed in CVM InitData for verification during attestation.
+- **MAGE/CAGE** -- MAGE is a monotonic counter tracking audit generations. SAMS produces a CAGE Token (Current Audit Generation Epoch), a signed JWT containing the full IdBlock, IdAuth, MAGE, and guest-owner identity. The CAGE Token is returned alongside signed ID Blocks and expected to be placed in CVM InitData for verification during attestation.
 - **Signing-policies** -- Guest-owners upload Rego policies (over mTLS) mapping launch params to signing keypairs. SAMS evaluates server-side; private keys never reach the untrusted host.
 - **Authorization policy** -- Admin Rego policy gating ID Block issuance. Rejects non-compliant configs before they can boot.
+- **MMA (Measurement Metadata Auditing)** -- Every successful `/measurement/<tee>/signed` request writes a Measurement Metadata Object (MMO) to the audit log, recording launch params, IdBlock metadata, guest-owner identity (or `"anonymous"`), MAGE, and SAMS key fingerprint. Launch digest computation is cached to avoid redundant crypto. See [Measurement Caching & Auditing](measurement-caching-and-auditing.md).
 
 ## New API Surface
 
@@ -71,7 +72,7 @@ All under `/kbs/v0/sams/`. Guest-owner endpoints use mTLS.
 | Endpoint | Auth | Purpose |
 |---|---|---|
 | `POST /measurement/<tee>/` | None | Compute measurement (+ ID Block if metadata provided) |
-| `POST /measurement/<tee>/auth` | Bearer (optional) | Signed ID Block + IdAuth |
+| `POST /measurement/<tee>/signed` | Bearer (optional) | Signed ID Block + IdAuth |
 | `GET /signing/identity-provider` | None | Discover CA URL for obtaining mTLS client certificates |
 | `POST /signing/policy` | mTLS | Register guest-owner signing-policy |
 | `DELETE /signing/policy` | mTLS | Revoke signing-policy + certs from RVPS |
@@ -96,8 +97,8 @@ Guest Owners who wish to run confidential workloads with pre-verification should
     - If Trustee has been configured to use a TLS certificate issued by a commerical/automated identify provider, then guest-owners can query the `GET /sams/signing/identity-provider` endpoint to obtain the URL of the issuing certificate authority.
 2. **From a trusted environment,** register a signing-policy with SAMS over mTLS via `POST /kbs/v0/sams/signing/policy`
 3. Finally, add these annotations to their pods on the Untrusted Host & run `kubectl rollout restart`:
-   - `"io.katacontainers.config.requirePreVerification": "true"`
-   - `"io.katacontainers.config.guestOwnerIdentity": "<base64 of mTLS client cert>"`
+   - `"io.katacontainers.config.hypervisor.requirePreVerification": "true"`
+   - `"io.katacontainers.config.hypervisor.guestOwnerIdentity": "<base64 of mTLS client cert>"`
 
 > **Note:** Kata Runtime must be patched to intercept these annotations, request a
 signed ID Block from SAMS, and pass `id-block`, `id-auth`, and
